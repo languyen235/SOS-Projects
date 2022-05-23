@@ -14,16 +14,74 @@ zsc12=("scysync212.zsc12" "scysync213.zsc12")
 zsc3=("scysync162.zsc3" "scysync163.zsc3")
 zsc7=("scysync164.zsc7" "scysync165.zsc7")
 
+allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}")
+
+#----
+check_host() {
+local host=$1
+match=0
+	#for h in "${iil[@]}" "${iind[@]}" "${imu[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${vr[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}";
+	for h in "${allhosts[@]}";
+	do
+		if [[ $host =~ $h ]]; then
+			echo "-I-: $host found"
+			match=1
+			break
+		fi
+	done
+	
+	[[ $match == 1 ]] || { echo "-E-: hostname not found"; exit 1; }
+} # End check_host
+
+#----
+view_cron() {
+local host=$1
+file=/tmp/view_cron.txt
+
+		echo -e "$host\n======" >> "$file"
+		ssh "${host}".intel.com crontab -l >> "$file"
+		echo "=====" >> "$file"
+}
+
+#----
 push_files() {
 	arr=("$@")
 	for i in "${arr[@]}"; do
-	echo "$i "
 	rm -f /opt/cliosoft/monitoring/tmp/*
-	rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh} "$i".intel.com:/opt/cliosoft/
+	rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh} "$i".intel.com:/opt/cliosoft/ &
 	done
+	wait
 }
 
-#my_function "${array[@]}"
+#----
+insert_cron() {
+host=$1
+
+#/usr/bin/crontab -l >& ~/CRON/CRONTAB.`uname -n`
+#crontab ~/CRON/CRONTAB.###
+
+	comm1='# Prometheus monitoring'
+	ssh  -T ${host}.intel.com 'bash -s' <<-EOL
+	(crontab -l > /tmp/crontab_new) >/dev/null 2>&1
+	[[ -s /tmp/crontab_new ]] || echo "#" >> /tmp/crontab_new  
+	sed -i '1s:^:$comm1\n*/5 * * * * /opt/cliosoft/monitoring/scripts/cliosoft_metrics.bash  >/dev/null 2>\&1\n#\n:' /tmp/crontab_new
+	crontab /tmp/crontab_new
+	rm -f /tmp/crontab_new
+	EOL
+
+	#ssh "${host}.intel.com" "crontab -l > /tmp/tmpcron; \
+	#		sed -i '1s:^:$comm1\n*/5 * * * * /opt/cliosoft/monitoring/scripts/sos_monitor_metrics.bash >/dev/null 2>\&1\n:' /tmp/tmpcron; \
+	#		crontab /tmp/tmpcron; \"
+	#		rm -f /tmp/tmpcron"
+	#echo -e "${cmd[*]}"
+	
+	# test
+	#ssh "${host}".intel.com 'ls /opt/cliosoft'
+	#1echo "${cmd[@]}"
+	
+	[[ $? == 0 ]] || { echo "-E-: Error with insert_cron result"; exit 1; }
+} # End insert_cron
+
 #----
 if [[ "$#" -eq 1 ]]; then
 	case "$1" in
@@ -40,8 +98,36 @@ if [[ "$#" -eq 1 ]]; then
 		zsc3) push_files "${zsc3[@]}";;
 		zsc7) push_files "${zsc7[@]}";;
 		vr) push_files "${vr[@]}";;
+		*) echo "-E-: Incorrect usage";;
+	esac
+elif [[ "$#" -eq 2 ]]; then
+	case "$1" in 
+		insert_cron)
+			if [[ $2 == --all ]]; then
+				# do all
+				for srv in "${allhosts[@]}"; do 
+					[[ $srv =~ imu ]] && continue || true 
+					"$1" "$srv"
+				done
+			else
+				# do by host
+				check_host "$2"
+				"$@"
+			fi
+		;;
+		view_cron)
+			if [[ $2 == --all ]]; then
+				for srv in "${allhosts[@]}"; do "$1" "$srv"; done
+			else
+				check_host "$2"
+				"$@"
+			fi
+		;;
+		*) 
+			echo -e "-E-: Incorrect usage\n" \
+			"[insert_cron | view_cron][ host|--all]"
+		;;
 	esac
 else
-	allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}")
 	push_files "${allhosts[@]}"
 fi
