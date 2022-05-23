@@ -61,12 +61,12 @@ host=$1
 #crontab ~/CRON/CRONTAB.###
 
 	comm1='# Prometheus monitoring'
-	ssh  -T ${host}.intel.com 'bash -s' <<-EOL
+	ssh -T ${host}.intel.com 'bash -s' <<-EOL
 	(crontab -l > /tmp/crontab_new) >/dev/null 2>&1
 	[[ -s /tmp/crontab_new ]] || echo "#" >> /tmp/crontab_new  
-	sed -i '1s:^:$comm1\n*/5 * * * * /opt/cliosoft/monitoring/scripts/cliosoft_metrics.bash  >/dev/null 2>\&1\n#\n:' /tmp/crontab_new
-	crontab /tmp/crontab_new
-	rm -f /tmp/crontab_new
+	sed -i '1s:^:$comm1\n*/5 * * * * /opt/cliosoft/monitoring/scripts/cliosoft_metrics.bash  >/dev/null 2>\&1\n:' /tmp/crontab_new
+	#crontab /tmp/crontab_new
+	#rm -f /tmp/crontab_new
 	EOL
 
 	#ssh "${host}.intel.com" "crontab -l > /tmp/tmpcron; \
@@ -83,6 +83,18 @@ host=$1
 } # End insert_cron
 
 #----
+update_cron() {
+local host=$1
+	mailto='MAILTO=linh.a.nguyen@intel.com'
+	ssh -T ${host}.intel.com 'bash -s' <<-EOL2
+	(crontab -l > /tmp/crontab_new) >/dev/null 2>&1
+	sed -i '1s:^:$mailto\n:' /tmp/crontab_new
+	crontab /tmp/crontab_new
+	rm -f /tmp/crontab_new
+	EOL2
+} # end update_cron
+
+----
 if [[ "$#" -eq 1 ]]; then
 	case "$1" in
 		iil) push_files "${iil[@]}";;
@@ -111,6 +123,17 @@ elif [[ "$#" -eq 2 ]]; then
 				done
 			else
 				# do by host
+				check_host "$2"
+				"$@"
+			fi
+		;;
+		update_cron)
+			if [[ $2 == --all ]]; then
+				for srv in "${allhosts[@]}"; do
+					[[ $srv =~ imu ]] && continue || true
+					"$1" "$srv"
+				done
+			else
 				check_host "$2"
 				"$@"
 			fi
