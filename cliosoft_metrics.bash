@@ -1,21 +1,20 @@
 #!/bin/bash
 #
-# Purpose: script check Clisooft service; write service status and metrics to Prometheus prom files
+# Purpose: script check Clisooft service then write service status and metrics to Prometheus prom files
 # 1. Monitor Cliosoft service running
-# 2. Routinely test read/write performance of NFS disks
+# 2. Monitor read/write performance of NFS disks
 # 3. Monitor amount disk space avaialable
 # Requirements: Cliosoft software installed on server at /opt/cliosoft
 
 
-# enable error trap 
 #set -exuo pipefail
 #export PS4='Line $LINENO: '
 
-## global $CLIOSOFT_DIR
+## global $CLIOSOFT_DIR variable
 [[ -z $CLIOSOFT_DIR ]] && { export CLIOSOFT_DIR=/opt/cliosoft/latest; export PATH=$CLIOSOFT_DIR/bin:$PATH; } || true
 [[ -e "$CLIOSOFT_DIR"/bin ]] || { echo '-F: Cliosoft binary not found'; exit 1; }
-site="${EC_ZONE/p_sc_1/sc1}"
-hostname=$(hostname)
+export sitecode=$(hostname -f | cut -d"." -f2)
+export hostname=$(hostname)
 
 # Script location
 script_path=$(dirname "$0")
@@ -38,9 +37,12 @@ run_sosmgr() {
 name="$1"  # service name
 attr="$2"  # atribute name 
 key="${attr##*_}"  # Remove front value by removing text from beggining including underscore
-	value=$(sosmgr service get -s "$name" --"$attr" | grep -Po "^\s+$key:\s+\K\S+")
+
+	# host: ipde-sc:scyhdk060.sc.intel.com
+	# regrex "^\s+$key:\s+.*:\K\S+"; \K ignores spaces and texts to 'host: ipde-sc:' and return the rest
+	server=$(sosmgr service get -s "$name" --"$attr" | grep -Po "^\s+$key:\s+\S+:\K\S+")
 	# return value or NULL if variable is empty
-	echo "${value:=NULL}"
+	echo "${server:=NULL}"
 }
 
 #----
@@ -53,7 +55,7 @@ create_data_file() {
 	
 	#Acquire a lock using file handle
 	flock -n 100 || { echo "-E: There is another process updating the file"; return; }
-	trap 'flock -u 100' INT TERM EXIT 
+	trap 'flock -u 100' INT TERM 
 
     # The sos command  should not take more than 3 seconds
     if ! /usr/bin/timeout 3s sosadmin list >/dev/null; then
@@ -68,7 +70,7 @@ create_data_file() {
 	[[ ${#services[@]} -ne 0 ]] || { echo "-F: Array is empty"; exit 1; }
 
     # iterate each primary and cache service in array
-    for service in "${services[@]}" 
+    for service in "${services[@]}"
     do
 		# Saving Cliosoft command output to array
 		readarray -t atts < <(sosadmin info "$service" ptype phost pcport prpath chost ccport cpath)
@@ -155,7 +157,7 @@ tmpfile=${tmp_dir}/Check_Cliosoft_Service.$$
 
 	# promp file headers
 	echo "# HELP Check_Cliosoft_Service Check whether SOS service is running" > "$tmpfile"
-	echo "# TYPE Check_Cliosoft_Service gauge" >> "$tmpfile"
+	echo "# TYPE Check_Cliosoft_Service" >> "$tmpfile"
 
 	# reading the csv file with , deleminator and save data to variables
 	while IFS=, read -r _service _host _role 
@@ -171,10 +173,10 @@ tmpfile=${tmp_dir}/Check_Cliosoft_Service.$$
 		if [[ $_host == "$hostname" ]]; then
 			case $_role in 
 				primary) 
-					echo "Check_Cliosoft_Service{site=$site,hostname=$_host,service=$_service,role=$_role,status=$p_status}" "$p_result" >> "$tmpfile"
+					echo "Check_Cliosoft_Service{site=\"$sitecode\",hostname=\"$_host\",service=\"$_service\",role=\"$_role\",status=\"$p_status\"}" "$p_result" >> "$tmpfile"
 				;;
 				cache)
-					echo "Check_Cliosoft_Service{site=$site,hostname=$_host,service=$_service,role=$_role,status=$c_status}" "$c_result" >> "$tmpfile"
+					echo "Check_Cliosoft_Service{site=\"$sitecode\",hostname=\"$_host\",service=\"$_service\",role=\"$_role\",status=\"$c_status\"}" "$c_result" >> "$tmpfile"
 				;;
 				*)
 					echo "-F: I can't determine service role"
@@ -201,12 +203,12 @@ monitor_nfs_times() {
 
 	#Acquire a lock using file handle
 	flock -n 200 || { echo "-E: There is another process updating the file"; return 10; }
-	trap "flock -u 200; rm -f /tmp/monitor_nfs_times.lock" INT TERM EXIT
+	trap "flock -u 200; rm -f /tmp/monitor_nfs_times.lock" INT TERM
 
 	tmpfile=${tmp_dir}/Check_Cliosoft_NFS_Latency.$$
 	dir=FiLe-CrEaTe.$$
-    echo "# HELP Check_Cliosoft_Disk_Latency Check Read/Write for elapsed time (seconds)" > "$tmpfile"
-    echo "# TYPE Check_Cliosoft_Disk_Latency counter" >> "$tmpfile"
+    echo "# HELP Check_Cliosoft_NFS_Latency Check Read/Write for elapsed time (seconds)" > "$tmpfile"
+    echo "# TYPE Check_Cliosoft_NFS_Latency gauge" >> "$tmpfile"
 
 	# inside process subtitution < <(...)
 	# awk gets all disks from data file 
@@ -235,14 +237,14 @@ monitor_nfs_times() {
 			rm -rf "${nfs_path}/$dir"  1>>/dev/null 2>&1
         	exec_time=$(echo "$(date +%s.%N) - $start_time" | bc)
         	time_used=$(printf "%.2f" "$exec_time")
-			echo "Check_Cliosoft_NFS_Latency{site=$site,server=$hostname,path=$nfs_path}" "$time_used" >> "$tmpfile"
+			echo "Check_Cliosoft_NFS_Latency{site=\"$sitecode\",server=\"$hostname\",path=\"$nfs_path\"}" "$time_used" >> "$tmpfile"
 		fi
     done
 
 	create_prom_file "$tmpfile"
 
 	#remote lock file
-	#flock -u 200
+	flock -u 200
 } # End monitor_nfs_times
 
 #----
@@ -260,8 +262,8 @@ tmpfile=${tmp_dir}/Check_Cliosoft_Disk_Space.$$
 		# df -BG always output in GB (1T is 1000GB) 
 		read -r total avail <<< $(df -BG "$disk" --output=size,avail | tail -n 1)
 		
-		#echo "sos_disk_space{site=$site,server=$hostname,path=$disk,free_space=$size}" "${size%G}"  >> "$tmpfile"				
-		echo "Check_Cliosoft_Disk_Space{site=$site,server=$hostname,path=$disk,total=$total}" "${avail%?}"  >> "$tmpfile"				
+		#echo "sos_disk_space{site=$sitecode,server=$hostname,path=$disk,free_space=$size}" "${size%G}"  >> "$tmpfile"				
+		echo "Check_Cliosoft_Disk_Space{site=\"$sitecode\",server=\"$hostname\",path=\"$disk\",total=\"$total\"}" "${avail%?}"  >> "$tmpfile"				
 	done
 	
 	create_prom_file "$tmpfile"

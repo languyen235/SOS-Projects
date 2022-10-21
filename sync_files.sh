@@ -6,6 +6,8 @@ imu=("musxl0350.imu")
 pdx=("plxs1706.pdx" "plxs1707.pdx" "plxs1708.pdx" "plxs1710.pdx")
 png=("pglhdk62.png" "pglhdk64.png")
 sc1=("scysync114.sc" "scysync115.sc")
+sc4=("scysync132.sc" "scysync133.sc")
+sc8=("scyhlx029.sc" "scyhlx030.sc")
 sc=("scyhdk060.sc" "scyhdk066.sc" "scysync30.sc")
 vr=("vrsxdm01.vr")
 zsc10=("scy0375.zsc10" "scy0376.zsc10" "scysync142.zsc10" "scysync143.zsc10")
@@ -18,6 +20,7 @@ allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@
 
 #----
 check_host() {
+# checking for server existance.
 local host=$1
 match=0
 	#for h in "${iil[@]}" "${iind[@]}" "${imu[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${vr[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}";
@@ -45,9 +48,11 @@ file=/tmp/view_cron.txt
 
 #----
 push_files() {
+# copy script(s) to local folder  of each SOS server
 	arr=("$@")
 	for i in "${arr[@]}"; do
 	rm -f /opt/cliosoft/monitoring/tmp/*
+	echo -e "${i}.intel.com\n================\n"
 	rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh} "$i".intel.com:/opt/cliosoft/ &
 	done
 	wait
@@ -55,6 +60,7 @@ push_files() {
 
 #----
 insert_cron() {
+# this function inserts the texts into cron file.
 host=$1
 
 #/usr/bin/crontab -l >& ~/CRON/CRONTAB.`uname -n`
@@ -84,17 +90,17 @@ host=$1
 
 #----
 update_cron() {
+# funtion udate email line in cron file
 local host=$1
-	mailto='MAILTO=linh.a.nguyen@intel.com'
 	ssh -T ${host}.intel.com 'bash -s' <<-EOL2
 	(crontab -l > /tmp/crontab_new) >/dev/null 2>&1
-	sed -i '1s:^:$mailto\n:' /tmp/crontab_new
+	sed -i 's:linh.a.nguyen:it.ddm.sos.adm:' /tmp/crontab_new
 	crontab /tmp/crontab_new
 	rm -f /tmp/crontab_new
 	EOL2
 } # end update_cron
 
-----
+#----
 if [[ "$#" -eq 1 ]]; then
 	case "$1" in
 		iil) push_files "${iil[@]}";;
@@ -103,6 +109,8 @@ if [[ "$#" -eq 1 ]]; then
 		pdx) push_files "${pdx[@]}";;
 		png) push_files "${png[@]}";;
 		sc1) push_files "${sc1[@]}";;
+		sc4) push_files "${sc4[@]}";;
+		sc8) push_files "${sc8[@]}";;
 		sc) push_files "${sc[@]}";;
 		zsc10) push_files "${zsc10[@]}";;
 		zsc11) push_files "${zsc11[@]}";;
@@ -114,10 +122,12 @@ if [[ "$#" -eq 1 ]]; then
 	esac
 elif [[ "$#" -eq 2 ]]; then
 	case "$1" in 
+		# I want to insert the cron only
 		insert_cron)
 			if [[ $2 == --all ]]; then
 				# do all
 				for srv in "${allhosts[@]}"; do 
+					# skip imu side because cron is too crowded with P4 configs. 
 					[[ $srv =~ imu ]] && continue || true 
 					"$1" "$srv"
 				done
@@ -127,9 +137,11 @@ elif [[ "$#" -eq 2 ]]; then
 				"$@"
 			fi
 		;;
+		# I want to update cron only
 		update_cron)
 			if [[ $2 == --all ]]; then
 				for srv in "${allhosts[@]}"; do
+					# skip imu side because cron is too crowded with P4 configs.
 					[[ $srv =~ imu ]] && continue || true
 					"$1" "$srv"
 				done
@@ -138,6 +150,7 @@ elif [[ "$#" -eq 2 ]]; then
 				"$@"
 			fi
 		;;
+		# I want to view the cron file of all or by server name
 		view_cron)
 			if [[ $2 == --all ]]; then
 				for srv in "${allhosts[@]}"; do "$1" "$srv"; done
@@ -152,5 +165,6 @@ elif [[ "$#" -eq 2 ]]; then
 		;;
 	esac
 else
+	# no option specified, default is to update script to all sites.
 	push_files "${allhosts[@]}"
 fi
