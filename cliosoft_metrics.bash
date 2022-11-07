@@ -19,7 +19,7 @@ export hostname=$(hostname)
 # Script location
 script_path=$(dirname "$0")
 
-# data file location
+# csv data file location
 data_file="${script_path}/data.csv"
 
 # scratch area
@@ -33,7 +33,7 @@ DEBUG=off
 
 #----
 run_sosmgr() {
-# Cliosoft command returns value of specific SOS service attribute
+# Aquire SOS service names by runing SOS command
 name="$1"  # service name
 attr="$2"  # atribute name 
 key="${attr##*_}"  # Remove front value by removing text from beggining including underscore
@@ -44,6 +44,22 @@ key="${attr##*_}"  # Remove front value by removing text from beggining includin
 	# return value or NULL if variable is empty
 	echo "${server:=NULL}"
 }
+
+#----
+convert_alias_to_hostname () {
+# convert alias to real hostnanme
+local input_name=$1
+
+	if [[ $input_name =~ iglb.intel.com ]]; then
+	  #covert name using nslookup to find ip and host on ip to return hostname
+	  ip=$(nslookup $input_name | tail -2 | grep -Po '^Address:\s+\K.*') 
+	  cname="$(host $ip | awk '{print $NF}' | awk -F. '{print $1}')"
+	else
+	  # covert to short name
+	  cname="${input_name%%.*}"
+	fi
+	echo "$cname"
+} # convert_alias_to_hostname
 
 #----
 create_data_file() {
@@ -69,7 +85,12 @@ create_data_file() {
 	# if array is empty, exit script with error
 	[[ ${#services[@]} -ne 0 ]] || { echo "-F: Array is empty"; exit 1; }
 
-    # iterate each primary and cache service in array
+	# add header to csv file
+	# example: testbk,sos-testprimary1-sc,primary,6381,/nfs/site/disks/sos_eval_scm/testbk.repo
+	# as: service,hostname,role,port,storage_path
+	echo "service,hostname,role,port,storage_path" > "$data_file"
+
+    # read each primary and cache service in array and save them to data file
     for service in "${services[@]}"
     do
 		# Saving Cliosoft command output to array
@@ -88,7 +109,9 @@ create_data_file() {
         cpath="${atts[6]:=$(run_sosmgr $service cache_path)}"
 	
 		# remove suffix .<site>.intel.com
-		phost="${phost%%.*}" && chost="${chost%%.*}"
+		#phost="${phost%%.*}" && chost="${chost%%.*}"
+		phost=$(convert_alias_to_hostname $phost)
+		chost=$(convert_alias_to_hostname $chost)
 
 		if [[ $ptype == LOCAL ]]; then
 			echo "$service,$phost,primary,$pcport,$prpath" >> "$data_file"        # output repo server metrics to file
@@ -246,6 +269,40 @@ monitor_nfs_times() {
 	#remote lock file
 	flock -u 200
 } # End monitor_nfs_times
+
+#----
+scrub_cache_disk() {
+# function to scrub service's cache disk
+# require service , project names
+#local disk=$1
+## exit funtion if disk is not a cache disk
+#[[ $disk =~ cac[he]? ]] || return
+#
+#for folder in $(ls "$disk"); do
+#	# next if folder name not containing character .cache
+#	[[ $folder =~ .cache ]] || continue 
+#	# remove .cache from folder name
+#	service="${folder%.cache}"
+#	for project in $(sosadmin projects "$service"); do 
+#		sosadmin cachecleanup "$service" "$project" 30 2 
+#	done
+#done
+
+local disk=$1
+	if [[ ! -z $disk ]]; then
+		echo "Function received null value."
+		return
+	fi
+
+    for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
+        for prj in $(sosadmin projects $srv); do
+            # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
+            sosadmin cachecleanup $srv $prj 30 2
+        done
+    done
+
+
+} # End scrub_cache_disk
 
 #----
 monitor_disk_space() {
