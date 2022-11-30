@@ -15,8 +15,9 @@ zsc11=("scycliosoft001.zsc11" "scycliosoft002.zsc11")
 zsc12=("scysync212.zsc12" "scysync213.zsc12")
 zsc3=("scysync162.zsc3" "scysync163.zsc3")
 zsc7=("scysync164.zsc7" "scysync165.zsc7")
+zsc9=("scysync144.zsc9" "scysync145.zsc9")
 
-allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}")
+allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}" "${zsc9[@]}")
 
 #----
 check_host() {
@@ -53,7 +54,7 @@ push_files() {
 	for i in "${arr[@]}"; do
 	rm -f /opt/cliosoft/monitoring/tmp/*
 	echo -e "${i}.intel.com\n================\n"
-	rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh} "$i".intel.com:/opt/cliosoft/ &
+	rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh,sos_check_disk_usage.sh,test.sh} "$i".intel.com:/opt/cliosoft/ &
 	done
 	wait
 }
@@ -117,6 +118,7 @@ if [[ "$#" -eq 1 ]]; then
 		zsc12) push_files "${zsc12[@]}";;
 		zsc3) push_files "${zsc3[@]}";;
 		zsc7) push_files "${zsc7[@]}";;
+		zsc9) push_files "${zsc7[@]}";;
 		vr) push_files "${vr[@]}";;
 		*) echo "-E-: Incorrect usage";;
 	esac

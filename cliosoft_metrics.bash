@@ -272,35 +272,37 @@ monitor_nfs_times() {
 
 #----
 scrub_cache_disk() {
-# function to scrub service's cache disk
-# require service , project names
-#local disk=$1
-## exit funtion if disk is not a cache disk
-#[[ $disk =~ cac[he]? ]] || return
+#function to scrub service's cache disk
 #
-#for folder in $(ls "$disk"); do
-#	# next if folder name not containing character .cache
-#	[[ $folder =~ .cache ]] || continue 
-#	# remove .cache from folder name
-#	service="${folder%.cache}"
-#	for project in $(sosadmin projects "$service"); do 
-#		sosadmin cachecleanup "$service" "$project" 30 2 
-#	done
-#done
+# disk=ddgipde.soscache.001; for srv in $(ls /nfs/site/disks/${disk} | grep -Po '.*(?=\.cache)'); do for prj in $(sosadmin projects $srv); do sosadmin cachecleanup $srv $prj 30 2; done; done
 
 local disk=$1
-	if [[ ! -z $disk ]]; then
-		echo "Function received null value."
-		return
-	fi
+# exit if variable is null
+## exit function if disk is not a cache disk
+[[ $disk =~ cac[he]? ]] || return
 
+local log=/tmp/scrubbed_${disk##*/}.log
+[[ -e $log ]] || touch "$log"
+retry=0
+
+	# if log exists and older than 1 day
+	if [[ -e $log && $(find "$log" -mmin +1440) ]]; then
+      rm -f "$log"
+	  touch "$log"
+    else
+      retry=$(cat $log)
+    fi
+  
     for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
         for prj in $(sosadmin projects $srv); do
             # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
-            sosadmin cachecleanup $srv $prj 30 2
+            sosadmin cachecleanup $srv $prj 2 30 2
         done
     done
 
+	((retry++)); echo "$retry" > $log
+	echo -e "Alert: Cache $disk was low space and scrubbed $retry $( [[ $retry > 1 ]] && echo times || echo time)" |
+	mail -s "Alert: Alert: $disk low disk space $avail_space" linh.a.nguyen@intel.com
 
 } # End scrub_cache_disk
 
@@ -318,6 +320,11 @@ tmpfile=${tmp_dir}/Check_Cliosoft_Disk_Space.$$
 	do
 		# df -BG always output in GB (1T is 1000GB) 
 		read -r total avail <<< $(df -BG "$disk" --output=size,avail | tail -n 1)
+
+		echo "$avail"
+		
+		# scrub cache disk
+		[[ $avail -lt 500 ]] && scrub_cache_disk $disk
 		
 		#echo "sos_disk_space{site=$sitecode,server=$hostname,path=$disk,free_space=$size}" "${size%G}"  >> "$tmpfile"				
 		echo "Check_Cliosoft_Disk_Space{site=\"$sitecode\",server=\"$hostname\",path=\"$disk\",total=\"$total\"}" "${avail%?}"  >> "$tmpfile"				
