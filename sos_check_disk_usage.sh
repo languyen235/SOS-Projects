@@ -52,40 +52,38 @@ get_disks() {
   readarray -t services < <(sosadmin list)
   for service in "${services[@]}"
   do
-		read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
-		prpath="$(dirname $prpath)" && cpath="$(dirname $cpath)"
+    read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
+    prpath="$(dirname $prpath)" && cpath="$(dirname $cpath)"
 
-		case "$ptype" in
-		LOCAL)
-			if [[ ! -v found["$prpath"] ]]
-			then
-				echo "$prpath" >> "$myfile"
-				found["$prpath"]=1
-				echo "$cpath" >> "$myfile"
-				found["$cpath"]=1
-			fi
-		;;
-		REMOTE)
-			if [[ ! -v found["$cpath"] ]]
-			then
-				echo "$cpath" >> "$myfile"
-				found["$cpath"]=1
-			fi
-		;;
-		*) { echo "-E: Disk informaion not found"; exit 1; }
-		;;
-		esac
-	done
+    case "$ptype" in
+    LOCAL)
+      if [[ ! -v found["$prpath"] ]]; then
+        echo "$prpath" >> "$myfile"
+        found["$prpath"]=1
+        echo "$cpath" >> "$myfile"
+        found["$cpath"]=1
+      fi
+    ;;
+    REMOTE)
+      if [[ ! -v found["$cpath"] ]]; then
+        echo "$cpath" >> "$myfile"
+        found["$cpath"]=1
+      fi
+    ;;
+    *) { echo "-E: Disk informaion not found"; exit 1; }
+    ;;
+    esac
+  done
 
-	# replace site names with site alias
-	sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$myfile"
+  # replace site names with site alias
+  sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$myfile"
 } # End get_disks
 
 #----
 size_cmd() {
 # return current available space
 local disk=$1
-	# df -BG output always in GB
+  # df -BG output always in GB
     size=$(df -BG "$disk" --output=avail | tail -1 | sed 's/ //')
     echo "$size"
 }
@@ -103,16 +101,22 @@ local disk=$1
 [[ $disk =~ cac[he]? ]] || return
 
 local log=/tmp/scrubbed_${disk##*/}.log
-touch $log
+#touch $log
 retry=0
 
     # if log exists and older than 1 day
-    if [[ -e $log && $(find "$log" -mmin +1440) ]]; then
-      rm -f "$log"
+    if [[ -e $log ]]; then
+        if [[ $(find "$log" -mmin +1440) ]]; then
+            rm -f "$log"
+            touch "$log"
+        else
+            retry=$(cat $log)
+        fi
     else
-      retry=$(cat $log)
+        touch "$log"
     fi
 
+    # outter loop lists service names; inner loop lists project names of each serivce name
     for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
         for prj in $(sosadmin projects $srv); do
             # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
@@ -120,9 +124,10 @@ retry=0
         done
     done
 
-    ((retry++)); echo "$retry" > $log
+    # Send email that cache disk was srubbed
+    echo "$((retry++))" > $log
     echo -e "Alert: Cache $disk was low space and scrubbed $retry $( [[ $retry > 1 ]] && echo times || echo time)" |
-    mail -s "Alert: $disk low disk space $avail_space" linh.a.nguyen@intel.com
+    mail -s "Alert: Cliosoft $disk at $EC_ZONE low disk space $avail_space" linh.a.nguyen@intel.com
 
 } # End scrub_cache_disk
 
@@ -131,20 +136,19 @@ main() {
 threshold=250
 site="$EC_ZONE"
 
-	file=/tmp/sos_disks.txt
-	get_disks "$file"
+  file=/tmp/sos_disks.txt
+  get_disks "$file"
 
-	for disk in $(sort -u < "$file")
-	do
-		# get availalespace on disk
-		avail_space=$(size_cmd "$disk")
-		if [[ ${avail_space%?} -lt $threshold ]]; then
-		  scrub_cache_disk "$disk"
-		  #echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
-		  #mail -s "Alert: $disk low disk space $avail_space" linh.a.nguyen@intel.com
-		fi
-	      echo "$disk (Avail space: $avail_space)"
-	done
+  for disk in $(sort -u < "$file")
+  do
+    # get availalespace on disk
+    avail_space=$(size_cmd "$disk")
+    if [[ ${avail_space%?} -lt $threshold ]]; then
+        scrub_cache_disk "$disk"
+        echo "$disk (Avail space: $avail_space)  *** Low disk space"
+    fi
+        echo "$disk (Avail space: $avail_space)"
+  done
 
 } # End main
 
@@ -154,12 +158,12 @@ flock 200 || exit 1
 trap "flock -u 200;rm -rf /tmp/sos_chekdisk.lock" INT TERM EXIT
 
 case "$1" in
-	"") 
-        main ;;
-	scrub_cache_disk) 
-	    exec "$@"; exit;;
-	*)
-		echo -e "-E: Wrong usage.\nUsage: $0 [cleancache <disk>]"
-		exit 1
-	;;
+  "")
+    main ;;
+  scrub_cache_disk)
+    exec "$@"; exit;;
+  *)
+    echo -e "-E: Wrong usage.\nUsage: $0 [cleancache <disk>]"
+    exit 1
+  ;;
 esac
