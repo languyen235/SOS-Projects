@@ -13,9 +13,12 @@ vr=("vrsxdm01.vr")
 zsc10=("scy0375.zsc10" "scy0376.zsc10" "scysync142.zsc10" "scysync143.zsc10")
 zsc11=("scycliosoft001.zsc11" "scycliosoft002.zsc11")
 zsc12=("scysync212.zsc12" "scysync213.zsc12")
+zsc14=("scysync146.zsc14" "scysync147.zsc12")
+zsc15=("scysync150.zsc14" "scysync151.zsc12")
 zsc3=("scysync162.zsc3" "scysync163.zsc3")
 zsc7=("scysync164.zsc7" "scysync165.zsc7")
 zsc9=("scysync144.zsc9" "scysync145.zsc9")
+
 
 
 allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}" "${zsc9[@]}")

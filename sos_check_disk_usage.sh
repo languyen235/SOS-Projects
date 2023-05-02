@@ -3,27 +3,7 @@
 # Purpose: get avaialble disk space and send email if space < 250GB
 
 #-------------------------
-print_to_file() {
-  local disk
-  disk=$1
-  MESSAGE="/tmp/disk-usage.out"
-  # df -GB always in GB
-  df -BG $disk | tail -n +2 >> $MESSAGE
-  cat $MESSAGE | grep G | column -t | while read output;
-  do
-    Sname=$(echo $output | awk '{print $1}')
-    Fsystem=$(echo $output | awk '{print $2}')
-    Size=$(echo $output | awk '{print $3}')
-    Used=$(echo $output | awk '{print $4}')
-    Avail=$(echo $output | awk '{print $5}')
-    Use=$(echo $output | awk '{print $6}')
-    Mnt=$(echo $output | awk '{print $7}')
-    echo "Server Name, Filesystem, Size, Used, Avail, Use%, Mounted on"
-    echo "$Sname,$Fsystem,$Size,$Used,$Avail,$Use,$Mnt"
-  done
-}
 
-#----
 increase_space() {   # arguments $disk $Size
   disk=$1
   diskSize=$2
@@ -43,10 +23,9 @@ increase_space() {   # arguments $disk $Size
 }
 
 #----
-get_disks() {
+get_sos_disks() {
   # get disk names from sos command; write results to file
   myfile=$1
-  [[ -e "$myfile" ]] && printf '' > "$myfile" # discard content
   declare -A found  # Associate array for traking disks that already being worked on.
   
   readarray -t services < <(sosadmin list)
@@ -77,31 +56,31 @@ get_disks() {
 
   # replace site names with site alias
   sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$myfile"
-} # End get_disks
+} # End get_sos_disks
 
 #----
-size_cmd() {
+check_disk_size() {
 # return current available space
 local disk=$1
-  # df -BG output always in GB
+  # df -BG output in GB
     size=$(df -BG "$disk" --output=avail | tail -1 | sed 's/ //')
-    echo "$size"
+    
+    # remove letter G at the end.
+    echo "${size%?}"
 }
 
 #----
 scrub_cache_disk() {
-#function to scrub service's cache disk
+#function to scrub service's cache disk and send email
 #
-# disk=ddgipde.soscache.001; for srv in $(ls /nfs/site/disks/${disk} | grep -Po '.*(?=\.cache)'); do for prj in $(sosadmin projects $srv); do sosadmin cachecleanup $srv $prj 30 2; done; done
-
 local disk=$1
+
 # exit if variable is null
 #[[ -z $disk ]] || { echo "Function received a null value."; return; }
 ## exit function if disk is not a cache disk
-[[ $disk =~ cac[he]? ]] || return
+#[[ $disk =~ cac[he]? ]] || return
 
 local log=/tmp/scrubbed_${disk##*/}.log
-#touch $log
 retry=0
 
     # if log exists and older than 1 day
@@ -111,44 +90,68 @@ retry=0
             touch "$log"
         else
             retry=$(cat $log)
+            echo "-I: $retry" 
         fi
     else
         touch "$log"
     fi
 
-    # outter loop lists service names; inner loop lists project names of each serivce name
+    # outter loop for service names; inner loop for project names 
     for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
         for prj in $(sosadmin projects $srv); do
             # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
-            sosadmin cachecleanup $srv $prj 2 30 2 >/dev/null 2>&1
+            sosadmin cachecleanup $srv $prj 2 7 2 >/dev/null 2>&1
         done
     done
 
     # Send email that cache disk was srubbed
-    echo "$((retry++))" > $log
-    echo -e "Alert: Cache $disk was low space and scrubbed $retry $( [[ $retry > 1 ]] && echo times || echo time)" |
-    mail -s "Alert: Cliosoft $disk at $EC_ZONE low disk space $avail_space" linh.a.nguyen@intel.com
+    echo "$((retry += 1))" > $log
+    echo -e "Alert: Disk $disk was low space and scrubbed $retry $( [[ $retry > 1 ]] && echo times || echo time)" |
+    mail -s "Alert: $disk at "$EC_ZONE" is low disk space (${avail_space}GB)" linh.a.nguyen@intel.com
 
 } # End scrub_cache_disk
 
 #==================================
 main() {
-threshold=250
+LIMIT=250
 site="$EC_ZONE"
 
   file=/tmp/sos_disks.txt
-  get_disks "$file"
+  [[ -e "$file" ]] && printf '' > "$file" # discard content
+  get_sos_disks "$file"
 
   for disk in $(sort -u < "$file")
   do
-    # get availalespace on disk
-    avail_space=$(size_cmd "$disk")
-    if [[ ${avail_space%?} -lt $threshold ]]; then
+    # get availale space on cache or repo disks
+    avail_space=$(check_disk_size "$disk")
+    if [[ $avail_space -lt $LIMIT && $disk =~ cac[he]? ]]; then  # scrubbing if cache disk space is below LIMIT
         scrub_cache_disk "$disk"
         echo "$disk (Avail space: $avail_space)  *** Low disk space"
-    fi
+    elif [[ $avail_space -lt $LIMIT && $disk =~ rep[o]? ]]; then
+        echo "$disk (Avail space: $avail_space)  *** Low disk space"
+        echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
+        mail -s "Alert: Repo $disk low disk space ($avail_space)" linh.a.nguyen@intel.com 
+    else 
         echo "$disk (Avail space: $avail_space)"
+    fi
   done
+
+#    if [[ $avail_space -lt $LIMIT ]]; then
+#      case $disk in
+#        cac[he]?)   # scrubbing cache disk if disk space is below LIMIT
+#          scrub_cache_disk "$disk" 
+#          echo "$disk (Avail space: $avail_space)  *** Low disk space"
+#        ;;
+#        rep[o]?)   # sending alert to incrase repo disk space
+#          echo "$disk (Avail space: $avail_space)  *** Low disk space"
+#          echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
+#                mail -s "Alert: Repo $disk low disk space ($avail_space)" linh.a.nguyen@intel.com
+#        ;;
+#      esac
+#    else
+#      echo "$disk (Avail space: $avail_space)"
+#    fi
+#  done
 
 } # End main
 
@@ -163,7 +166,7 @@ case "$1" in
   scrub_cache_disk)
     exec "$@"; exit;;
   *)
-    echo -e "-E: Wrong usage.\nUsage: $0 [cleancache <disk>]"
+    echo -e "-E: Wrong usage.\nUsage: $0 [scrub_cache_disk <disk>]"
     exit 1
   ;;
 esac
