@@ -1,34 +1,31 @@
 #!/bin/bash
 
-iil=("iapp523.iil" "iapp524.iil" "iapp567.iil" "iapp620.iil" "isyn056.iil" "isyn057.iil")
-iind=("inlapp436.iind" "inlapp437.iind" "inlapp476.iind" "inlapp477.iind")
-imu=("musxl0350.imu")
-pdx=("plxs1706.pdx" "plxs1707.pdx" "plxs1708.pdx" "plxs1710.pdx")
-png=("pglhdk62.png" "pglhdk64.png")
-sc1=("scysync114.sc" "scysync115.sc")
-sc4=("scysync132.sc" "scysync133.sc")
-sc8=("scyhlx029.sc" "scyhlx030.sc")
-sc=("scyhdk060.sc" "scyhdk066.sc" "scysync30.sc")
-vr=("vrsxdm01.vr")
-zsc10=("scy0375.zsc10" "scy0376.zsc10" "scysync142.zsc10" "scysync143.zsc10")
-zsc11=("scycliosoft001.zsc11" "scycliosoft002.zsc11")
-zsc12=("scysync212.zsc12" "scysync213.zsc12")
-zsc14=("scysync146.zsc14" "scysync147.zsc12")
-zsc15=("scysync150.zsc14" "scysync151.zsc12")
-zsc3=("scysync162.zsc3" "scysync163.zsc3")
-zsc7=("scysync164.zsc7" "scysync165.zsc7")
-zsc9=("scysync144.zsc9" "scysync145.zsc9")
+declare -A array[iil]=("iapp523.iil" "iapp524.iil" "iapp567.iil" "iapp620.iil" "isyn056.iil" "isyn057.iil")
+declare -a iind=("inlapp436.iind" "inlapp437.iind" "inlapp476.iind" "inlapp477.iind")
+declare -a imu=("musxl0350.imu")
+declare -a pdx=("plxs1706.pdx" "plxs1707.pdx" "plxs1708.pdx" "plxs1710.pdx")
+declare -a png=("pglhdk62.png" "pglhdk64.png")
+declare -a sc1=("scysync114.sc" "scysync115.sc")
+declare -a sc4=("scysync132.sc" "scysync133.sc")
+declare -a sc8=("scyhlx029.sc" "scyhlx030.sc")
+declare -a sc=("scyhdk060.sc" "scyhdk066.sc" "scysync30.sc")
+declare -a vr=("vrsxdm01.vr")
+declare -a zsc10=("scy0375.zsc10" "scy0376.zsc10" "scysync142.zsc10" "scysync143.zsc10")
+declare -a zsc11=("scycliosoft001.zsc11" "scycliosoft002.zsc11")
+declare -a zsc12=("scysync212.zsc12" "scysync213.zsc12")
+declare -a zsc14=("scysync146.zsc14" "scysync147.zsc12")
+declare -a zsc15=("scysync150.zsc14" "scysync151.zsc12")
+declare -a zsc3=("scysync162.zsc3" "scysync163.zsc3")
+declare -a zsc7=("scysync164.zsc7" "scysync165.zsc7")
+declare -a zsc9=("scysync144.zsc9" "scysync145.zsc9")
 
-
-
-allhosts=("${iil[@]}" "${iind[@]}" "${imul[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}" "${zsc9[@]}")
+allhosts=("${iil[@]}" "${iind[@]}" "${imu[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}" "${zsc9[@]}")
 
 #----
 check_host() {
   # checking for server existance.
   local host=$1
   match=0
-  #for h in "${iil[@]}" "${iind[@]}" "${imu[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${vr[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}";
   for h in "${allhosts[@]}";
   do
     if [[ $host =~ $h ]]; then
@@ -49,6 +46,7 @@ view_cron() {
   echo -e "$host\n======" >> "$file"
   ssh "${host}".intel.com crontab -l >> "$file"
   echo "=====" >> "$file"
+  echo "-I: Output cron file to $file"
 }
 
 #----
@@ -58,7 +56,9 @@ push_files() {
   for i in "${arr[@]}"; do
     rm -f /opt/cliosoft/monitoring/tmp/*
     echo -e "${i}.intel.com\n================\n"
-    rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh,sos_check_disk_usage.sh,test.sh} "$i".intel.com:/opt/cliosoft/ &
+    #rsync -av /opt/cliosoft/monitoring --delete --exclude={.git,data.csv,sync_files.sh,sos_check_disk_usage.sh,test.sh} "$i".intel.com:/opt/cliosoft/ &
+    rsync -av /opt/cliosoft/monitoring/scripts/{cliosoft_metrics.bash,creat_files_time} --delete  "$i".intel.com:/opt/cliosoft/scripts/ &
+    rsync -av /opt/cliosoft/monitoring/{prom_files,tmp} "$i".intel.com:/opt/cliosoft/ &
   done
   wait
 }
@@ -76,8 +76,8 @@ insert_cron() {
   (crontab -l > /tmp/crontab_new) >/dev/null 2>&1
   [[ -s /tmp/crontab_new ]] || echo "#" >> /tmp/crontab_new
   sed -i '1s:^:$comm1\n*/5 * * * * /opt/cliosoft/monitoring/scripts/cliosoft_metrics.bash  >/dev/null 2>\&1\n:' /tmp/crontab_new
-  #crontab /tmp/crontab_new
-  #rm -f /tmp/crontab_new
+  crontab /tmp/crontab_new
+  rm -f /tmp/crontab_new
   EOL
   
   #ssh "${host}.intel.com" "crontab -l > /tmp/tmpcron; \

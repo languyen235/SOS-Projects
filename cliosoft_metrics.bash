@@ -46,7 +46,7 @@ key="${attr##*_}"  # Remove front value by removing text from beggining includin
 }
 
 #----
-convert_alias_to_hostname () {
+convert_iglb_to_hostname () {
 # convert alias to real hostnanme
 local input_name=$1
 
@@ -59,7 +59,7 @@ local input_name=$1
 	  cname="${input_name%%.*}"
 	fi
 	echo "$cname"
-} # convert_alias_to_hostname
+} # convert_iglb_to_hostname
 
 #----
 create_data_file() {
@@ -110,8 +110,11 @@ create_data_file() {
 	
 		# remove suffix .<site>.intel.com
 		#phost="${phost%%.*}" && chost="${chost%%.*}"
-		phost=$(convert_alias_to_hostname $phost)
-		chost=$(convert_alias_to_hostname $chost)
+		#phost=$(convert_iglb_to_hostname $phost)
+		#chost=$(convert_iglb_to_hostname $chost)
+        # use nslookup to get real hostname if using alias *.sync.intel.com
+        phost=$(nslookup "$phost"  | grep -Po 'Name:\s+\K(\w+)')
+        chost=$(nslookup "$chost"  | grep -Po 'Name:\s+\K(\w+)')
 
 		if [[ $ptype == LOCAL ]]; then
 			echo "$service,$phost,primary,$pcport,$prpath" >> "$data_file"        # output repo server metrics to file
