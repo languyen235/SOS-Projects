@@ -46,6 +46,27 @@ key="${attr##*_}"  # Remove front value by removing text from beggining includin
 }
 
 #----
+nslookup_cname() {
+# run nslookup to find hostname of a CNAME alias
+host_name=$1
+sync='sync.intel.com'
+iglb='iglb.intel.com'
+servername=''
+
+    if [[ $host_name =~ $sync ]]; then
+        #servername=$(nslookup ${host_name}.${domain} | grep -Po 'Name:\s+\K(\w+)')
+        servername=$(/usr/bin/nslookup ${host_name} | grep -Po 'Name:\s+\K(\w+)')
+    elif [[ $host_name =~ $iglb ]]; then
+        IP=$(/usr/bin/host ${host_name} | sed -e "s/.*\ //")   # find IP
+        servername=$(/usr/bin/nslookup "$IP" | grep -Po 'name\s+=\s+\K(\w+)(?=.*$)') # resolve IP to hostname
+    else
+        servername="${host_name%%.*}"   # else returning a short host name using variable expansion
+    fi
+
+    echo "$servername"
+} # end nslookup_cname
+
+#----
 convert_iglb_to_hostname () {
 # convert alias to real hostnanme
 local input_name=$1
@@ -94,27 +115,30 @@ create_data_file() {
     for service in "${services[@]}"
     do
 		# Saving Cliosoft command output to array
-		readarray -t atts < <(sosadmin info "$service" ptype phost pcport prpath chost ccport cpath)
+		readarray -t array < <(sosadmin info "$service" ptype phost pcport prpath chost ccport cpath)
 
 		# ptype phost pcport prpath ctype chost ccport cpath
 		#   0      1      2      3    4     5     6      7
 
 		# if variable is empty, run second command 
-        ptype="${atts[0]:?Variable is empty or unset}"
-        phost="${atts[1]:=$(run_sosmgr $service primary_host)}"
-        pcport="${atts[2]:=$(run_sosmgr $service primary_port)}"
-        prpath="${atts[3]:=$(run_sosmgr $service primary_path)}"
-        chost="${atts[4]:=$(run_sosmgr $service cache_host)}"
-        ccport="${atts[5]:=$(run_sosmgr $service cache_port)}"
-        cpath="${atts[6]:=$(run_sosmgr $service cache_path)}"
+        ptype="${array[0]:?Variable is empty or unset}"
+        phost="${array[1]:=$(run_sosmgr $service primary_host)}"
+        pcport="${array[2]:=$(run_sosmgr $service primary_port)}"
+        prpath="${array[3]:=$(run_sosmgr $service primary_path)}"
+        chost="${array[4]:=$(run_sosmgr $service cache_host)}"
+        ccport="${array[5]:=$(run_sosmgr $service cache_port)}"
+        cpath="${array[6]:=$(run_sosmgr $service cache_path)}"
 	
 		# remove suffix .<site>.intel.com
 		#phost="${phost%%.*}" && chost="${chost%%.*}"
 		#phost=$(convert_iglb_to_hostname $phost)
 		#chost=$(convert_iglb_to_hostname $chost)
         # use nslookup to get real hostname if using alias *.sync.intel.com
-        phost=$(nslookup "$phost"  | grep -Po 'Name:\s+\K(\w+)')
-        chost=$(nslookup "$chost"  | grep -Po 'Name:\s+\K(\w+)')
+        #phost=$(nslookup "$phost"  | grep -Po 'Name:\s+\K(\w+)')
+        #chost=$(nslookup "$chost"  | grep -Po 'Name:\s+\K(\w+)')
+
+        phost=$(nslookup_cname "$phost")
+        chost=$(nslookup_cname "$chost")
 
 		if [[ $ptype == LOCAL ]]; then
 			echo "$service,$phost,primary,$pcport,$prpath" >> "$data_file"        # output repo server metrics to file
@@ -122,7 +146,7 @@ create_data_file() {
 		else
 			echo "$service,$chost,cache,$ccport,$cpath" >> "$data_file"   # save remote cache server metrics to file
 		fi
-		unset atts
+		unset array
     done
 
 	# file size > 0  or exit error

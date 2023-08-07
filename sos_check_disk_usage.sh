@@ -100,7 +100,7 @@ retry=0
     for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
         for prj in $(sosadmin projects $srv); do
             # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
-            sosadmin cachecleanup $srv $prj 2 7 2 >/dev/null 2>&1
+            sosadmin cachecleanup $srv $prj 2 30 2 >/dev/null 2>&1
         done
     done
 
@@ -136,24 +136,6 @@ site="$EC_ZONE"
     fi
   done
 
-#    if [[ $avail_space -lt $LIMIT ]]; then
-#      case $disk in
-#        cac[he]?)   # scrubbing cache disk if disk space is below LIMIT
-#          scrub_cache_disk "$disk" 
-#          echo "$disk (Avail space: $avail_space)  *** Low disk space"
-#        ;;
-#        rep[o]?)   # sending alert to incrase repo disk space
-#          echo "$disk (Avail space: $avail_space)  *** Low disk space"
-#          echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
-#                mail -s "Alert: Repo $disk low disk space ($avail_space)" linh.a.nguyen@intel.com
-#        ;;
-#      esac
-#    else
-#      echo "$disk (Avail space: $avail_space)"
-#    fi
-#  done
-
-} # End main
 
 # only once instane of this script running at any given time
 exec 200>/tmp/sos_chekdisk.lock || exit 1

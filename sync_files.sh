@@ -1,6 +1,6 @@
 #!/bin/bash
 
-declare -A array[iil]=("iapp523.iil" "iapp524.iil" "iapp567.iil" "iapp620.iil" "isyn056.iil" "isyn057.iil")
+declare -a iil=("iapp523.iil" "iapp524.iil" "iapp567.iil" "iapp620.iil" "isyn056.iil" "isyn057.iil")
 declare -a iind=("inlapp436.iind" "inlapp437.iind" "inlapp476.iind" "inlapp477.iind")
 declare -a imu=("musxl0350.imu")
 declare -a pdx=("plxs1706.pdx" "plxs1707.pdx" "plxs1708.pdx" "plxs1710.pdx")
@@ -13,11 +13,15 @@ declare -a vr=("vrsxdm01.vr")
 declare -a zsc10=("scy0375.zsc10" "scy0376.zsc10" "scysync142.zsc10" "scysync143.zsc10")
 declare -a zsc11=("scycliosoft001.zsc11" "scycliosoft002.zsc11")
 declare -a zsc12=("scysync212.zsc12" "scysync213.zsc12")
-declare -a zsc14=("scysync146.zsc14" "scysync147.zsc12")
-declare -a zsc15=("scysync150.zsc14" "scysync151.zsc12")
+declare -a zsc14=("scysync146.zsc14" "scysync147.zsc14")
+declare -a zsc15=("scysync150.zsc15" "scysync151.zsc15")
+declare -a zsc16=("scysync152.zsc16" "scysync153.zsc16")
 declare -a zsc3=("scysync162.zsc3" "scysync163.zsc3")
 declare -a zsc7=("scysync164.zsc7" "scysync165.zsc7")
 declare -a zsc9=("scysync144.zsc9" "scysync145.zsc9")
+
+declare -A [moni_host]=("isyn056.iil" "inlapp436.iind" "musxl0350.imu" "plxs1708.pdx"  "pglhdk62.png" "scysync114.sc" "scysync132.sc" "scyhlx029.sc" "scyhdk060.sc" "vrsxdm01.vr" "scysync142.zsc10" "scycliosoft001.zsc11" "scysync212.zsc12" "scysync146.zsc14" "scysync150.zsc15" "scysync152.zsc16" "scysync162.zsc3" "scysync164.zsc7" "scysync144.zsc9")
+
 
 allhosts=("${iil[@]}" "${iind[@]}" "${imu[@]}" "${pdx[@]}" "${png[@]}" "${sc1[@]}" "${sc[@]}" "${zsc10[@]}" "${zsc11[@]}" "${zsc12[@]}" "${zsc3[@]}" "${zsc7[@]}" "${zsc9[@]}")
 
