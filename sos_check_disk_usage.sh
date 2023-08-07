@@ -19,7 +19,30 @@ increase_space() {   # arguments $disk $Size
   #areaid=$(/usr/intel/bin/stodstatus areas --cell "$site" --fie areaid --for sc "path=~'ddgipde.soscache.001'"
   #eval "$stod_status_cmd areas --cell $site --fie areaid::15,path \"path=~'$diskname'\""
   #echo "Example: stod modify --cell zsc11 --areaid zsc11.35746 --maxfiles 50000000"
-  /usr/intel/bin/stod resize --cell "$site" --path "$disk" --size "$newDiskSize" --immediate --exceed-forecast
+  /usr/intel/bin/stod resize --cell "$site" --path "$disk" --size "$newDiskSize" --immediate --exceed-forecast --allow-migration true
+}
+
+#----
+exclude_service() { 
+# exclude service from services array
+# input file /opt/clisoft/excluded_services.txt. Each service per line 
+
+  for srv_name in $(cat excluded_services.txt); do
+    for i in "${!services[@]}"; do
+        if [[ ${services[$i]} == "$srv_name" ]]; then
+            echo "Service $srv_name found at index $i...Excluding $srv_name"
+            unset services[$i]
+	    break
+        fi
+    done
+  done
+
+  # Re-index the array
+  temp_array=()
+  for element in "${services[@]}"; do
+    temp_array+=("$element")
+  done
+  services=("${temp_array[@]}")
 }
 
 #----
@@ -29,29 +52,35 @@ get_sos_disks() {
   declare -A found  # Associate array for traking disks that already being worked on.
   
   readarray -t services < <(sosadmin list)
+
+  # run function to exclude service if input file exits
+  [[ -f 'excluded_services.txt' ]] && exclude_service
+
   for service in "${services[@]}"
   do
-    read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
-    prpath="$(dirname $prpath)" && cpath="$(dirname $cpath)"
+    #read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
+    {
+	read -r ptype
+	read -r prpath
+	read -r cpath
+    } < <(sosadmin info "$service" ptype prpath cpath)
+    
+    # get repo/cache disk names
+	prpath="$(dirname $prpath)" && cpath="$(dirname $cpath)"
+	#echo $prpath
+	#echo $cpath
 
-    case "$ptype" in
-    LOCAL)
-      if [[ ! -v found["$prpath"] ]]; then
-        echo "$prpath" >> "$myfile"
-        found["$prpath"]=1
-        echo "$cpath" >> "$myfile"
-        found["$cpath"]=1
-      fi
-    ;;
-    REMOTE)
-      if [[ ! -v found["$cpath"] ]]; then
-        echo "$cpath" >> "$myfile"
-        found["$cpath"]=1
-      fi
-    ;;
-    *) { echo "-E: Disk informaion not found"; exit 1; }
-    ;;
-    esac
+	# service is LOCAL and primary disk contains / and has not been found
+	if [[ $ptype == LOCAL  && $prpath =~ /  &&  ! -v found["$cpath"] ]]; then
+	   echo "$prpath" >> "$myfile"
+	   found["$prpath"]=1
+	fi
+
+	if [[ $cpath =~ /  && ! -v found["$cpath" ]]; then
+	   echo "$cpath" >> "$myfile"
+	   found["$cpath"]=1
+	fi
+	   
   done
 
   # replace site names with site alias
@@ -75,25 +104,17 @@ scrub_cache_disk() {
 #
 local disk=$1
 
-# exit if variable is null
 #[[ -z $disk ]] || { echo "Function received a null value."; return; }
 ## exit function if disk is not a cache disk
 #[[ $disk =~ cac[he]? ]] || return
 
 local log=/tmp/scrubbed_${disk##*/}.log
-retry=0
-
-    # if log exists and older than 1 day
-    if [[ -e $log ]]; then
-        if [[ $(find "$log" -mmin +1440) ]]; then
-            rm -f "$log"
-            touch "$log"
-        else
-            retry=$(cat $log)
-            echo "-I: $retry" 
-        fi
+    
+	# if log exists and older than 1 day; create the log and scrubb a cache disk 
+    if [[ -e $log && $(find "$log" -mmin +1440) ]]; then
+        rm -f "$log" && touch "$log"
     else
-        touch "$log"
+	return   # exit function if log time less than a day 
     fi
 
     # outter loop for service names; inner loop for project names 
@@ -104,10 +125,7 @@ retry=0
         done
     done
 
-    # Send email that cache disk was srubbed
-    echo "$((retry += 1))" > $log
-    echo -e "Alert: Disk $disk was low space and scrubbed $retry $( [[ $retry > 1 ]] && echo times || echo time)" |
-    mail -s "Alert: $disk at "$EC_ZONE" is low disk space (${avail_space}GB)" linh.a.nguyen@intel.com
+	echo "-I: Completed scurbbing cache disk $disk"
 
 } # End scrub_cache_disk
 
@@ -124,9 +142,12 @@ site="$EC_ZONE"
   do
     # get availale space on cache or repo disks
     avail_space=$(check_disk_size "$disk")
+	
     if [[ $avail_space -lt $LIMIT && $disk =~ cac[he]? ]]; then  # scrubbing if cache disk space is below LIMIT
         scrub_cache_disk "$disk"
         echo "$disk (Avail space: $avail_space)  *** Low disk space"
+		echo "Alert: Disk $disk was low disk space and has been scrubbed today" |
+				mail -s "Alert: $disk at "$EC_ZONE" is low disk space (${avail_space}GB)" linh.a.nguyen@intel.com
     elif [[ $avail_space -lt $LIMIT && $disk =~ rep[o]? ]]; then
         echo "$disk (Avail space: $avail_space)  *** Low disk space"
         echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
@@ -135,7 +156,7 @@ site="$EC_ZONE"
         echo "$disk (Avail space: $avail_space)"
     fi
   done
-
+} # End main
 
 # only once instane of this script running at any given time
 exec 200>/tmp/sos_chekdisk.lock || exit 1
@@ -144,9 +165,12 @@ trap "flock -u 200;rm -rf /tmp/sos_chekdisk.lock" INT TERM EXIT
 
 case "$1" in
   "")
-    main ;;
+    main
+  ;;
   scrub_cache_disk)
-    exec "$@"; exit;;
+    exec "$@"
+    exit
+  ;;
   *)
     echo -e "-E: Wrong usage.\nUsage: $0 [scrub_cache_disk <disk>]"
     exit 1
