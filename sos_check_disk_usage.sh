@@ -153,7 +153,7 @@ site="$EC_ZONE"
         echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
         mail -s "Alert: Repo $disk low disk space ($avail_space)" linh.a.nguyen@intel.com 
     else 
-        echo "$disk (Avail space: $avail_space)"
+        echo "$disk (Avail space: ${avail_space}GB)"
     fi
   done
 } # End main
