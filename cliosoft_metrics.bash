@@ -83,6 +83,30 @@ local input_name=$1
 } # convert_iglb_to_hostname
 
 #----
+exclude_service() {
+# remove service name from array
+# input file /opt/cliosoft/excluded_services.txt. Each service per line
+
+local file=$1
+  for srv_name in $(cat "$file"); do
+    for i in "${!services[@]}"; do
+        if [[ ${services[$i]} == "$srv_name" ]]; then
+            echo "Service $srv_name found at index $i...Excluding $srv_name"
+            unset services[$i]
+            break
+        fi
+    done
+  done
+
+  # Re-index the array
+  temp_array=()
+  for element in "${services[@]}"; do
+    temp_array+=("$element")
+  done
+  services=("${temp_array[@]}")
+} # end exclude_service
+
+#----
 create_data_file() {
 # Run cliosoft command to list service names, ports, roles, and disks and save the results to a csv file
 # Use a lock to ensure that only one process is creating csv file at any given time.
@@ -103,8 +127,11 @@ create_data_file() {
         read -ra  services <<< $(sosadmin list)  # output multiple lines
     fi
 
-	# if array is empty, exit script with error
-	[[ ${#services[@]} -ne 0 ]] || { echo "-F: Array is empty"; exit 1; }
+    # if array is empty, exit script with error
+    [[ ${#services[@]} -ne 0 ]] || { echo "-F: Array is empty"; exit 1; }
+
+    # run function to exclude service if input file exits
+    [[ -f '/opt/cliosoft/excluded_services.txt' ]] && exclude_service '/opt/cliosoft/excluded_services.txt'
 
 	# add header to csv file
 	# example: testbk,sos-testprimary1-sc,primary,6381,/nfs/site/disks/sos_eval_scm/testbk.repo
@@ -347,11 +374,9 @@ tmpfile=${tmp_dir}/Check_Cliosoft_Disk_Space.$$
 	do
 		# df -BG always output in GB (1T is 1000GB) 
 		read -r total avail <<< $(df -BG "$disk" --output=size,avail | tail -n 1)
-
-		echo "$avail"
-		
+		#echo "$avail"
 		# scrub cache disk
-		[[ $avail -lt 500 ]] && scrub_cache_disk $disk
+		#[[ ${avail%G} -lt 500 ]] && scrub_cache_disk $disk
 		
 		#echo "sos_disk_space{site=$sitecode,server=$hostname,path=$disk,free_space=$size}" "${size%G}"  >> "$tmpfile"				
 		echo "Check_Cliosoft_Disk_Space{site=\"$sitecode\",server=\"$hostname\",path=\"$disk\",total=\"$total\"}" "${avail%?}"  >> "$tmpfile"				
