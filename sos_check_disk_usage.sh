@@ -1,43 +1,58 @@
 #!/bin/bash
 
-# Purpose: get avaialble disk space and send email if space < 250GB
+# Purpose: get avaialble disk space and send email if space <= 250GB
 
 #-------------------------
 
+[[ -e /opt/cliosoft/latest  ]] || { echo '-F-: Path /opt/cliosoft/latest not found'; exit 1; }
+export CLIOSOFT=/opt/cliosoft/latest
+export PATH=$CLIOSOFT/bin:$PATH
+
+get_site_code() {
+  local site
+  [[ $EC_ZONE =~ ^sc([1468]+) ]] && site=sc${BASH_REMATCH[2]} || site="$EC_ZONE"
+  echo $site
+}
+
 increase_space() {   # arguments $disk $Size
   disk=$1
-  diskSize=$2
-  newDiskSize=$((diskSize + 100))
-  #site=$EC_ZONE
-  if [[ $EC_ZONE =~ ^p_sc_([1468]+) ]]; then
-    site=sc${BASH_REMATCH[2]}
-  else
-    site="$EC_ZONE"
-  fi
-  
+  add_size=$2
+  site=$(get_site_code)  
+
   # find disk'areaid
   #areaid=$(/usr/intel/bin/stodstatus areas --cell "$site" --fie areaid --for sc "path=~'ddgipde.soscache.001'"
   #eval "$stod_status_cmd areas --cell $site --fie areaid::15,path \"path=~'$diskname'\""
   #echo "Example: stod modify --cell zsc11 --areaid zsc11.35746 --maxfiles 50000000"
-  /usr/intel/bin/stod resize --cell "$site" --path "$disk" --size "$newDiskSize" --immediate --exceed-forecast --allow-migration true
+ 
+  local size
+  size=$(echo $(df -BG "$disk" --output=size | tail -1))
+  echo "Disk size was $size" 
+  new_size=$((${size%?} + add_size))  # remove G letter before adding 2 numbers
+  new_size=$((new_size - (new_size % 2))) # rounding down the new size
+  echo "Increased size to ${new_size}G"
+  cmd="/usr/intel/bin/stod resize --cell "$site" --path "$disk" --size ${new_size}G --immediate --exceed-forecast"
+  echo $cmd
+
+  #error=$(eval "${cmd}" 2>&1 >"/dev/null")
+  #[[ ${?} -eq 0 ]] && echo "Passed" || echo "Failed"
 }
 
 #----
 exclude_service() { 
-# exclude service from services array
+# Exclude SOS service from list
 # input file /opt/clisoft/excluded_services.txt. Each service per line 
 
   for srv_name in $(cat excluded_services.txt); do
     for i in "${!services[@]}"; do
-        if [[ ${services[$i]} == "$srv_name" ]]; then
-            echo "Service $srv_name found at index $i...Excluding $srv_name"
-            unset services[$i]
-	    break
-        fi
+      if [[ ${services[$i]} == "$srv_name" ]]; then
+        echo "-I-: Excluding $srv_name"
+        unset services[$i]  # Remove service from the array
+	    break               # break inner loop
+      fi
     done
   done
 
-  # Re-index the array
+  # We must re-index the array after deleting element in array
   temp_array=()
   for element in "${services[@]}"; do
     temp_array+=("$element")
@@ -47,10 +62,10 @@ exclude_service() {
 
 #----
 get_sos_disks() {
-  # get disk names from sos command; write results to file
+#Purppose: get disk names from sos command; write results to file
+
   myfile=$1
-  declare -A found  # Associate array for traking disks that already being worked on.
-  
+  declare -A found  # Associate array for tracking disk names
   readarray -t services < <(sosadmin list)
 
   # run function to exclude service if input file exits
@@ -58,44 +73,34 @@ get_sos_disks() {
 
   for service in "${services[@]}"
   do
-    #read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
-    {
-	read -r ptype
-	read -r prpath
-	read -r cpath
-    } < <(sosadmin info "$service" ptype prpath cpath)
+    # < <(command) is process subtitution; <<< $(command) is here-string
+    read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
+    #echo -e "Service: $service\nType: $ptype\nPrimep: $prpath\nCachep: $cpath\n"
     
-    # get repo/cache disk names
-	prpath="$(dirname $prpath)" && cpath="$(dirname $cpath)"
-	#echo $prpath
-	#echo $cpath
+    # get local repo disks
+    if [[ $ptype == LOCAL && ! -v found["$prpath"] ]]; then
+      echo $(dirname $prpath) >> "$myfile"
+      found["$prpath"]=1
+    fi
 
-	# service is LOCAL and primary disk contains / and has not been found
-	if [[ $ptype == LOCAL  && $prpath =~ /  &&  ! -v found["$cpath"] ]]; then
-	   echo "$prpath" >> "$myfile"
-	   found["$prpath"]=1
+    # get all cache disks to file 
+	if [[ -n "$cpath" && ! -v found["$cpath"] ]]; then
+      echo $(dirname $cpath) >> "$myfile"
+	  found["$cpath"]=1
 	fi
-
-	if [[ $cpath =~ /  && ! -v found["$cpath" ]]; then
-	   echo "$cpath" >> "$myfile"
-	   found["$cpath"]=1
-	fi
-	   
   done
 
-  # replace site names with site alias
+  # replace site names with site in disk path
   sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$myfile"
 } # End get_sos_disks
 
 #----
-check_disk_size() {
+get_avail_space() {
 # return current available space
-local disk=$1
-  # df -BG output in GB
+    local disk=$1
+    # df -BG output in GB
     size=$(df -BG "$disk" --output=avail | tail -1 | sed 's/ //')
-    
-    # remove letter G at the end.
-    echo "${size%?}"
+    echo "$size"
 }
 
 #----
@@ -110,50 +115,53 @@ local disk=$1
 
 local log=/tmp/scrubbed_${disk##*/}.log
     
-	# if log exists and older than 1 day; create the log and scrubb a cache disk 
+	# if scurbbed log older than 1 day; create the log and scrubb a cache disk 
     if [[ -e $log && $(find "$log" -mmin +1440) ]]; then
-        rm -f "$log" && touch "$log"
+      rm -f "$log" && touch "$log"
     else
-	return   # exit function if log time less than a day 
+	  return   # exit function if log time less than a day 
     fi
 
     # outter loop for service names; inner loop for project names 
     for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
-        for prj in $(sosadmin projects $srv); do
-            # clean up cache data when 'older_than_days' is 30 and 'link_count' is 2
-            sosadmin cachecleanup $srv $prj 2 30 2 >/dev/null 2>&1
-        done
+      for prj in $(sosadmin projects $srv); do
+        # clean up cache data when 'older_than_days' is 30 and 'link_count' is <= 2 with 2 versions
+        sosadmin cachecleanup $srv $prj 2 30 2 >/dev/null 2>&1
+      done
     done
 
 	echo "-I: Completed scurbbing cache disk $disk"
 
 } # End scrub_cache_disk
 
+
 #==================================
 main() {
-LIMIT=250
-site="$EC_ZONE"
+LIMIT=250 # limit 250GB 
+site=$(get_site_code)
 
   file=/tmp/sos_disks.txt
-  [[ -e "$file" ]] && printf '' > "$file" # discard content
+  [[ -e "$file" ]] && printf '' > "$file" ||  mkdir -p "$file" 
+  
   get_sos_disks "$file"
 
   for disk in $(sort -u < "$file")
   do
-    # get availale space on cache or repo disks
-    avail_space=$(check_disk_size "$disk")
-	
-    if [[ $avail_space -lt $LIMIT && $disk =~ cac[he]? ]]; then  # scrubbing if cache disk space is below LIMIT
-        scrub_cache_disk "$disk"
-        echo "$disk (Avail space: $avail_space)  *** Low disk space"
-		echo "Alert: Disk $disk was low disk space and has been scrubbed today" |
-				mail -s "Alert: $disk at "$EC_ZONE" is low disk space (${avail_space}GB)" linh.a.nguyen@intel.com
-    elif [[ $avail_space -lt $LIMIT && $disk =~ rep[o]? ]]; then
-        echo "$disk (Avail space: $avail_space)  *** Low disk space"
-        echo -e "${site^^} disk space is low\n$disk ($avail_space) as of $(date)" |
-        mail -s "Alert: Repo $disk low disk space ($avail_space)" linh.a.nguyen@intel.com 
-    else 
-        echo "$disk (Avail space: ${avail_space}GB)"
+    [[ $disk =~ soscache ]] && disk_type=cache || disk_type=repo
+    
+    # get available space on cache and repo disks
+    avail_space=$(get_avail_space "$disk")
+    
+    # email if space is low
+    if [[ ${avail_space%?} -le $LIMIT ]] ; then
+      echo "$disk (Avail space: $avail_space)  *** Low disk space"
+      increase_space $disk 200
+cat<<- EOF | mail -s "Alert: ${disk_type^} disk in ${site^^} is low space ($avail_space)" linh.a.nguyen@intel.com
+${disk_type^} disk space is low
+$disk (Avail space: $avail_space)
+EOF
+    else
+      echo "$disk (Avail space: $avail_space)"
     fi
   done
 } # End main
@@ -167,12 +175,13 @@ case "$1" in
   "")
     main
   ;;
-  scrub_cache_disk)
-    exec "$@"
+  "increase_space")
+    shift
+    increase_space "$@"
     exit
   ;;
   *)
-    echo -e "-E: Wrong usage.\nUsage: $0 [scrub_cache_disk <disk>]"
+    echo -e "-E: Wrong usage.\nUsage: $0" 
     exit 1
   ;;
 esac
