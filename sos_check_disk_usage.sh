@@ -5,9 +5,14 @@
 #-------------------------
 
 [[ -e /opt/cliosoft/latest  ]] || { echo '-F-: Path /opt/cliosoft/latest not found'; exit 1; }
-export CLIOSOFT=/opt/cliosoft/latest
-export PATH=$CLIOSOFT/bin:$PATH
+export CLIOSOFT_DIR=/opt/cliosoft/latest
+export PATH=$CLIOSOFT_DIR/bin:$PATH
+#sos_disks=/tmp/sos_disks.txt
+#myfile2=/opt/cliosoft/excluded_services.txt
+#sos_msg_log=/tmp/sos_msg.log
 
+
+#----
 get_site_code() {
   local site
   [[ $EC_ZONE =~ ^sc([1468]+) ]] && site=sc${BASH_REMATCH[2]} || site="$EC_ZONE"
@@ -15,6 +20,7 @@ get_site_code() {
 }
 
 increase_space() {   # arguments $disk $Size
+  local disk site size
   disk=$1
   add_size=$2
   site=$(get_site_code)  
@@ -24,74 +30,80 @@ increase_space() {   # arguments $disk $Size
   #eval "$stod_status_cmd areas --cell $site --fie areaid::15,path \"path=~'$diskname'\""
   #echo "Example: stod modify --cell zsc11 --areaid zsc11.35746 --maxfiles 50000000"
  
-  local size
-  size=$(echo $(df -BG "$disk" --output=size | tail -1))
+  size=$(df -BG "$disk" --output=size | tail -1 | sed 's/ \+//')
   echo "Disk size was $size" 
-  new_size=$((${size%?} + add_size))  # remove G letter before adding 2 numbers
-  new_size=$((new_size - (new_size % 2))) # rounding down the new size
-  echo "Increased size to ${new_size}G"
-  cmd="/usr/intel/bin/stod resize --cell "$site" --path "$disk" --size ${new_size}G --immediate --exceed-forecast"
-  echo $cmd
+  x=$((${size%?} + add_size))  # remove G letter before adding 2 numbers
+  #new_size=$((new_size - (new_size % 2))) 
 
-  #error=$(eval "${cmd}" 2>&1 >"/dev/null")
+  # rounding down, example 251 wil become 250
+  [[ $((x % 2)) -ne 0 ]] && new_size=$((x - (x % 2))) || new_size=$x
+
+  echo "Increased size to ${new_size}G"
+  areaid=$(/usr/intel/bin/stodstatus areas --cell "$site" --fie areaid --for sc "path=='$disk'")
+  stod_cmd="/usr/intel/bin/stod resize --cell "$site" --areaid "$areaid" --size ${new_size}G --immediate --exceed-forecast"
+  echo $stod_cmd > "$sos_msg_log"
+
+  #error=$(eval "${stod_cmd}" 2>&1 >"$sos_msg_log")
   #[[ ${?} -eq 0 ]] && echo "Passed" || echo "Failed"
 }
 
 #----
 exclude_service() { 
-# Exclude SOS service from list
-# input file /opt/clisoft/excluded_services.txt. Each service per line 
+# remove  SOS service from service list if serivces need to be excluded
+  local input_file=$1  # file 
+  is_excluded=0
 
-  for srv_name in $(cat excluded_services.txt); do
-    for i in "${!services[@]}"; do
-      if [[ ${services[$i]} == "$srv_name" ]]; then
-        echo "-I-: Excluding $srv_name"
-        unset services[$i]  # Remove service from the array
-	    break               # break inner loop
+  # exit function if file empty or has only spaces
+  [[ -z $(grep '[^[:space:]]' $input_file) ]] && return 0
+
+  # remove service name from services array if found in the file
+  while IFS= read -r line; do
+    for index in "${!services[@]}"; do
+      if [[ ${services[index]} = $line ]]; then
+        echo "-I-: Excluding $line"
+        unset services[index]  # Remove element from the array
+        is_excluded=1
       fi
     done
-  done
+  done < "$input_file"
 
-  # We must re-index the array after deleting element in array
-  temp_array=()
-  for element in "${services[@]}"; do
-    temp_array+=("$element")
-  done
-  services=("${temp_array[@]}")
+  # reindex array if excluding is true
+  [[ $is_excluded ]] && services=("${services[@]}")
 }
+
 
 #----
 get_sos_disks() {
 #Purppose: get disk names from sos command; write results to file
 
-  myfile=$1
   declare -A found  # Associate array for tracking disk names
-  readarray -t services < <(sosadmin list)
 
-  # run function to exclude service if input file exits
-  [[ -f 'excluded_services.txt' ]] && exclude_service
-
+  shopt -s nocasematch   # enable the nocasematch option
   for service in "${services[@]}"
   do
     # < <(command) is process subtitution; <<< $(command) is here-string
-    read -r ptype prpath cpath <<< $(sosadmin info "$service" ptype prpath cpath)
+    read -r ptype prpath cpath <<<$(sosadmin info "$service" ptype prpath cpath)
     #echo -e "Service: $service\nType: $ptype\nPrimep: $prpath\nCachep: $cpath\n"
     
-    # get local repo disks
-    if [[ $ptype == LOCAL && ! -v found["$prpath"] ]]; then
-      echo $(dirname $prpath) >> "$myfile"
+    # get local repo disks;
+    # case insensitive when setting  shopt -s nocasematch
+
+    if [[ $ptype == local && ! -v found[$prpath] ]]; then 
+      dirname "$prpath" >> "$sos_disks"
       found["$prpath"]=1
     fi
 
     # get all cache disks to file 
 	if [[ -n "$cpath" && ! -v found["$cpath"] ]]; then
-      echo $(dirname $cpath) >> "$myfile"
+      dirname $cpath >> "$sos_disks"
 	  found["$cpath"]=1
 	fi
   done
+  shopt -u nocasematch   # disable the nocasematch option
 
   # replace site names with site in disk path
-  sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$myfile"
+  sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' "$sos_disks"
+
 } # End get_sos_disks
 
 #----
@@ -99,66 +111,44 @@ get_avail_space() {
 # return current available space
     local disk=$1
     # df -BG output in GB
-    size=$(df -BG "$disk" --output=avail | tail -1 | sed 's/ //')
+    size=$(df -BG "$disk" --output=avail | tail -1 | sed 's/ \+//')
     echo "$size"
 }
-
-#----
-scrub_cache_disk() {
-#function to scrub service's cache disk and send email
-#
-local disk=$1
-
-#[[ -z $disk ]] || { echo "Function received a null value."; return; }
-## exit function if disk is not a cache disk
-#[[ $disk =~ cac[he]? ]] || return
-
-local log=/tmp/scrubbed_${disk##*/}.log
-    
-	# if scurbbed log older than 1 day; create the log and scrubb a cache disk 
-    if [[ -e $log && $(find "$log" -mmin +1440) ]]; then
-      rm -f "$log" && touch "$log"
-    else
-	  return   # exit function if log time less than a day 
-    fi
-
-    # outter loop for service names; inner loop for project names 
-    for srv in $(ls $disk | grep -Po '.*(?=\.cache)'); do
-      for prj in $(sosadmin projects $srv); do
-        # clean up cache data when 'older_than_days' is 30 and 'link_count' is <= 2 with 2 versions
-        sosadmin cachecleanup $srv $prj 2 30 2 >/dev/null 2>&1
-      done
-    done
-
-	echo "-I: Completed scurbbing cache disk $disk"
-
-} # End scrub_cache_disk
 
 
 #==================================
 main() {
-LIMIT=250 # limit 250GB 
-site=$(get_site_code)
-
-  file=/tmp/sos_disks.txt
-  [[ -e "$file" ]] && printf '' > "$file" ||  mkdir -p "$file" 
+  LIMIT=250 # threshold value 250GB
+  site=$(get_site_code) 
+  recipient="linh.a.nguyen@intel.com"
+  sos_disks=/tmp/sos_disks.txt
+  myfile2=/opt/cliosoft/excluded_services.txt
+  sos_msg_log=/tmp/sos_msg.log
   
-  get_sos_disks "$file"
+  readarray -t services < <(sosadmin list)
 
-  for disk in $(sort -u < "$file")
+  [[ -e $myfile2 ]] && exclude_service "$myfile2"
+  
+  [[ -e "$sos_disks" ]] && rm -f "$sos_disks"
+  
+  get_sos_disks "$sos_disks"
+
+  for disk in $(sort -u < "$sos_disks")
   do
     [[ $disk =~ soscache ]] && disk_type=cache || disk_type=repo
     
     # get available space on cache and repo disks
     avail_space=$(get_avail_space "$disk")
     
-    # email if space is low
-    if [[ ${avail_space%?} -le $LIMIT ]] ; then
+    # email if space is less than LIMIT
+    if [[ ${avail_space%?} -lt $LIMIT ]] ; then
       echo "$disk (Avail space: $avail_space)  *** Low disk space"
       increase_space $disk 200
-cat<<- EOF | mail -s "Alert: ${disk_type^} disk in ${site^^} is low space ($avail_space)" linh.a.nguyen@intel.com
-${disk_type^} disk space is low
+	  subject="Alert: ${site^^} $disk_type disk is low on space ($avail_space)"
+cat<< EOF | echo /usr/intel/bin/mutt -s "$subject" -- "$recipient"
+${site^^} $disk_type disk in is less than ${LIMIT}GB
 $disk (Avail space: $avail_space)
+
 EOF
     else
       echo "$disk (Avail space: $avail_space)"

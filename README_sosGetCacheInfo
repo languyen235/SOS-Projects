@@ -1,3 +1,0 @@
-sosGetCacheInfo <service> <project>
-
-tail -n +4 <output>.txt | sed 's|ORPHANED FILE :|rm -f|g' > rm_orphans.sh
