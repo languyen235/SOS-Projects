@@ -1,9 +1,10 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
+import smtplib
+from email.message import EmailMessage
+
 def send_email(subject, body, to_email, from_email):
-    import smtplib
-    # Import the email modules we'll need
-    from email.message import EmailMessage
+    """ Send email to user"""
 
     # with open(textfile) as fp:
     #   # Create a text/plain message

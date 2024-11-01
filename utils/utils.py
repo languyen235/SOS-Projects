@@ -33,7 +33,7 @@ def file_older_than(file_path: str | os.PathLike, day: int = 1):
     return result
 
 
-def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str | None]:
+def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
     """Increase disk size with START command
     1. Expected output for success:
     Your request is being processed
@@ -49,17 +49,20 @@ def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str | None]
     print(stod_cmd)
 
     do_it = False
-    result = ()
+    status = ()
     if do_it is True:
         try:
             p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
-            if re.search(r'successfully', p.stdout):
-                result = True, p.stdout
+            reg_result = re.search(r'successfully', p.stdout, re.I).group(0)
+            if reg_result:
+                return True, reg_result
+            else:
+                return False, p.stdout
         except subprocess.CalledProcessError as er:
             print(f"-F- Disk resizing failed: {er.stderr}")
-            result = False, er.stderr
+            return False, er.stderr
 
-    return result
+
 
 def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
     """read START history if disk size has been increased
@@ -77,17 +80,16 @@ def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
         f"--number 1 \"description=~'{d.name}' && type=~'resize'\""
     print(cmd)
 
-    result: bool | None = True
     try:
         p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
         print(p.stdout)
         # analyze output
-        match_true = re.search(r"stod\s+resize", p.stdout)
-        match_none = re.search(r"Type,SubmitTime", p.stdout)
+        match_1 = re.search(r"stod\s+resize", p.stdout)
+        match_2 = re.search(r"Type,SubmitTime", p.stdout)
 
-        if match_true:
+        if match_1:
             result = True # disk has been increased
-        elif match_none:
+        elif match_2:
             result = None # not been increased lately
         else:
             result = False
@@ -96,3 +98,11 @@ def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
         result = False
 
     return result
+
+
+def disk_space_status(disk: str):
+    """Available disk space. See shutil mode for more info
+    (2**30) converts bytes to GB, // keeps only integer number
+    Returns a list [total, used, available]
+    """
+    return [x // (2**30) for x in shutil.disk_usage(disk)]

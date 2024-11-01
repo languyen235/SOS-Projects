@@ -3,7 +3,6 @@
 import subprocess
 import re
 import shlex
-import shutil
 import fcntl
 from pprint import pprint as pp
 from typing import List, Iterator
@@ -52,6 +51,8 @@ class SiteSOS:
         self.site = site
         self.disk_file = Path(data_path, f"{self.site.upper()}_cliosoft_disks.txt")
         self.excluded_file = Path(data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
+        # --force-new-data, -fn ( if adding excluded services or when services down)
+
 
 
     def get_services(self) -> List[str]:
@@ -110,7 +111,6 @@ class SiteSOS:
 
     def create_disk_file(self, disk_file) -> None:
         """Write primary and cache paths to file"""
-
         seen = set()
         with open(disk_file, 'w', newline='', encoding='utf8') as file:
             for line in self.get_disks():
@@ -133,16 +133,8 @@ class SiteSOS:
         subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(disk_file), check=True, shell=True)
 
 
-def disk_space_status(disk: str):
-    """Available disk space. See shutil mode for more info
-    (2**30) converts bytes to GB, // keeps only integer number
-    """
-    return [x // (2**30) for x in shutil.disk_usage(disk)]
-
-
 def main() -> None:
-    """ Main """
-
+    """ """
     ## Requires SOS_SERVERS_DIR variable if not already set in the environment
     # os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
@@ -180,31 +172,37 @@ def main() -> None:
     messages: List[str] = []
     # check each disk for available space
     for disk in sorted(disks, key=os.path.basename):
-        disk_size, _, avail_space = disk_space_status(disk)
+        disk_size, _, avail_space = util.disk_space_status(disk)
 
         # steps to take if disk belows the limit
         if avail_space < limit:
             messages.append(f"-W- {disk} Size(GB): {disk_size}; Avail(GB): {avail_space} *** Low disk space")
             was_increased = util.was_disk_size_been_increased(disk, day=7)
-            # print(was_increased)
 
-            if was_increased is None:
-                messages.append(f"-I- Increasing {disk} disk size")
-                #status, output = util.increase_disk_size(disk, adding=10)
-                #status, output = (False, 'something text')
-            elif was_increased is True:
-                messages.append(f"-W- {disk} size was increased recently...Need investigation")
-            elif was_increased is False:
-                messages.append(f"-F- Failed to check disk {disk}...Got unexpected result")
+            match was_increased:
+                case None:
+                    messages.append(f"-I- Increasing {disk} disk size now")
+                    #status, output = util.increase_disk_size(disk, adding=10)
+                    status, output = (True, 'something good')
+                    if status:
+                        messages.append(f"-I- {output}")
+                    else:
+                        messages.append(f"-E- {output}")
+                case True:
+                    messages.append(f"-E- {disk} size was increased recently...Need investigation")
+                case False:
+                    messages.append(f"-F- Failed to check disk {disk}...Got unexpected result")
+                case _:
+                    raise ValueError("-F- Not a correct value")
         else:
             print(f"-I- {disk} [ Size(GB): {disk_size}; Avail(GB): {avail_space} ]")
 
     # email user(s)
     if messages:
-        subject = f"Alert: {sos.site} Cliosoft disk is low on space"
-        to_email = recipient
-        from_email = recipient
-        # email.send_email(subject, '\n'.join(messages), to_email, from_email)
+        subject = f"Cliosoft Alert: {sos.site} disk is low on space"
+        to_person = recipient
+        from_person = recipient
+        # email.send_email(subject, '\n'.join(messages), to_person, from_person)
         pp(messages)
 
 
