@@ -133,11 +133,11 @@ class SiteSOS:
         subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(disk_file), check=True, shell=True)
 
 
-    def disk_space_status(self, disk: str):
-        """Available disk space. See shutil mode for more info
-        (2**30) converts bytes to GB, // keeps only integer number
-        """
-        return [x // (2**30) for x in shutil.disk_usage(disk)]
+def disk_space_status(disk: str):
+    """Available disk space. See shutil mode for more info
+    (2**30) converts bytes to GB, // keeps only integer number
+    """
+    return [x // (2**30) for x in shutil.disk_usage(disk)]
 
 
 def main() -> None:
@@ -168,7 +168,7 @@ def main() -> None:
     # disk = /nfs/site/disks/hipipde_soscache_010 (pdx)
     # _disk = '/nfs/site/disks/hipipde.sosrepo.007'
     #_disk = '/nfs/site/disks/ddmtest_sosrepo_001'
-    # _size, _space = sos.disk_space_status(_disk)
+    # _size, _space = disk_space_status(_disk)
     # util.increase_disk_size(_disk, 1000)
     # print(util.has_size_been_increased(_disk))
     # _disk2 = '/nfs/site/disks/ddmtest_soscache_001'
@@ -180,7 +180,7 @@ def main() -> None:
     messages: List[str] = []
     # check each disk for available space
     for disk in sorted(disks, key=os.path.basename):
-        disk_size, _, avail_space = sos.disk_space_status(disk)
+        disk_size, _, avail_space = disk_space_status(disk)
 
         # steps to take if disk belows the limit
         if avail_space < limit:

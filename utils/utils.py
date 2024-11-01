@@ -77,7 +77,7 @@ def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
         f"--number 1 \"description=~'{d.name}' && type=~'resize'\""
     print(cmd)
 
-    result = True
+    result: bool | None = True
     try:
         p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
         print(p.stdout)
