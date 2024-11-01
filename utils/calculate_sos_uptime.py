@@ -1,4 +1,4 @@
-#!/usr/intel/pkgs/python3/3.12.3/bin/python3.12
+#!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
 from UsrIntel.R1 import os, sys
 import subprocess
@@ -6,10 +6,14 @@ import subprocess
 
 def get_number_services():
     number_services: int
+    a_string = "sc, sc1, sc4, sc8, zsc9, zsc11, zsc11, zsc12, zsc14, zsc15, zsc16, zsc18, pdx, iind, png, iil"
+    # Remove spaces with replace(), split the string using comma as delimiter
+    sites = tuple(a_string.replace(' ','').split(","))  # Split the string using comma as delimiter
     # for s in ${sites[@]}; do
     #   # inner function returns service number; outer function add  number to variable; the & running job in background
     #   services=$((services + $(ssh -t sosmgr-"$s".sync.intel.com "/opt/cliosoft/latest/bin/sosadmin list | wc -l" &)))
-
+    for site in sites:
+        ssh_cmd = "ssh -t sosmgr-{site}.sync.intel.com /opt/cliosoft/latest/bin/sosadmin list | wc -l"
     return number_services
 
 
@@ -49,7 +53,9 @@ def main():
         month_name, (actual_uptime / potential_uptime * 100)))
     
     decor = f"{'-'* len(max(array, key=len))}"  # max() for a longest string
-    print(f"{decor}\n" + f"{'\n'.join(array)}\n" + f"{decor}\n")
+    #print(f"{decor}\n" + f"{'\n'.join(array)}\n" + f"{decor}\n")
+    # chr(10) for newline(\n)
+    print(f"{decor}{chr(10)}" + f"{chr(10).join(array)}{chr(10)}" + f"{decor}{chr(10)}")
 
 if __name__ == '__main__':
     main()

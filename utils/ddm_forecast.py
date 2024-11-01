@@ -1,7 +1,6 @@
 #!/usr/intel/pkgs/python3/3.12.3/bin/python3.12
 
 from UsrIntel.R1 import os, sys
-from typing import Union
 import datetime as dt
 import argparse
 
