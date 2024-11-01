@@ -1,0 +1,98 @@
+#!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
+
+from typing import List, Tuple, Iterator, Union
+import subprocess
+import re
+import time
+import shutil
+from pathlib import Path
+import os
+
+THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
+
+
+def file_older_than(file_path: str | os.PathLike, day: int = 1):
+    """Return status if file is older than number of days"""
+    # Get the current time
+    current_time = time.time()
+
+    # Get the last modification time of the file
+    file_mod_time = os.path.getmtime(file_path)
+
+    # Calculate the difference in seconds
+    time_difference = current_time - file_mod_time
+
+    # one day (86400 seconds)
+    one_day_in_seconds = 24 * 60 * 60
+
+    result = False
+    if time_difference > (one_day_in_seconds * day):
+        print(f"The file '{file_path}' is older than {day} day(s).")
+        result = True
+
+    return result
+
+
+def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str | None]:
+    """Increase disk size with START command
+    1. Expected output for success:
+    Your request is being processed
+    successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
+    """
+    # <size> /(2**30) return  GB from Bytes; // division and returns the integer part of the result (rounding down)
+    size = (shutil.disk_usage(_disk)[0]) // (2**30)
+    by_number = 100 if size >= 1000 else 10
+    new_size = (size // by_number * by_number) + adding  # the // for only integer
+    print(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
+    stod_cmd = f"/usr/intel/bin/stod resize --cell {THIS_SITE} \
+                --path {_disk} --size {new_size}GB --immediate --exceed-forecast"
+    print(stod_cmd)
+
+    do_it = False
+    result = ()
+    if do_it is True:
+        try:
+            p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
+            if re.search(r'successfully', p.stdout):
+                result = True, p.stdout
+        except subprocess.CalledProcessError as er:
+            print(f"-F- Disk resizing failed: {er.stderr}")
+            result = False, er.stderr
+
+    return result
+
+def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
+    """read START history if disk size has been increased
+    1) Expected output. There may be a blank line in output depending on OS
+    Type,SubmitTime
+    stod resize,10/24/2024 13:47:04
+    2) Output as False:
+    Type,SubmitTime
+    3) Timeout error from START
+    Error: request timed out, please try with --timeout switch
+    """
+    d = Path(_disk)
+    cmd: str = '/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history ' + \
+        f"{day}d " + \
+        f"--number 1 \"description=~'{d.name}' && type=~'resize'\""
+    print(cmd)
+
+    result = True
+    try:
+        p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
+        print(p.stdout)
+        # analyze output
+        match_true = re.search(r"stod\s+resize", p.stdout)
+        match_none = re.search(r"Type,SubmitTime", p.stdout)
+
+        if match_true:
+            result = True # disk has been increased
+        elif match_none:
+            result = None # not been increased lately
+        else:
+            result = False
+    except subprocess.CalledProcessError as er:
+        print(er.stderr)
+        result = False
+
+    return result

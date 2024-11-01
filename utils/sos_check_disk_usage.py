@@ -1,25 +1,29 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
-from UsrIntel.R1 import os, sys
+
 import subprocess
 import re
 import shlex
 import shutil
-# import math
+import fcntl
 from pprint import pprint as pp
 from typing import List, Iterator
 from pathlib import Path
 
+from UsrIntel.R1 import os, sys
 
-def lock_script(lock_file: str):
-    """ Create a lock file to indicate script is currently running
-        only once instant of this script running at any given time
+import utils as util
+import email_user as email
+
+
+def lock_script(lockf_: str):
+    """ Create a lock file to indicate script is currently running.
+        Should only be one instant of this script running at any given time
     """
-    import fcntl
     try:
         # Try to acquire an exclusive lock on the file
-        lock_fd = os.open(lock_file, os.O_CREAT | os.O_RDWR, mode=0o644)
-        fcntl.lockf(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lock_fd
+        lockfd_ = os.open(lockf_, os.O_CREAT | os.O_RDWR, mode=0o644)
+        fcntl.lockf(lockfd_, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lockfd_
     except IOError:
         print("Another instance of the script is already running.")
         sys.exit(1)
@@ -30,9 +34,11 @@ lock_fd = lock_script(lock_file)
 
 # Directory for data and logs
 data_path = Path('/opt/cliosoft/monitoring')
-if not data_path.exists(): data_path.mkdir(mode=0o775, parents=True, exist_ok=True)
+if not data_path.exists():
+    data_path.mkdir(mode=0o775, parents=True, exist_ok=True)
 
 class SubprocessFailed(Exception):
+    """Custom SubprocessFailed"""
     def __init__(self, message, exit_code, stderr):
         super().__init__(message)
         self.exit_code = exit_code
@@ -40,6 +46,8 @@ class SubprocessFailed(Exception):
 
 
 class SiteSOS:
+    """Cliosoft site"""
+
     def __init__(self, site):
         self.site = site
         self.disk_file = Path(data_path, f"{self.site.upper()}_cliosoft_disks.txt")
@@ -48,19 +56,14 @@ class SiteSOS:
 
     def get_services(self) -> List[str]:
         """Get list of SOS services from Unix env using subprocess"""
+        cmd = "/opt/cliosoft/latest/bin/sosadmin list"
         try:
-            # os.system(f"ssh {self.sosmgr_server} sosmgr service get -o csv -pp > {self.f_services}")
-            cmd = "/opt/cliosoft/latest/bin/sosadmin list"
             p = subprocess.run(shlex.split(cmd), capture_output=True, check=True, text=True)
-        # except subprocess.CalledProcessError as e:
-        #     print("Subprocess failed with exit code:", e.returncode)
-        #     print("Error output:", e.stderr)
-        #     raise Exception("Subprocess failed") from e
         except subprocess.CalledProcessError as e:
             raise SubprocessFailed("Subprocess failed", e.returncode, e.stderr) from e
 
         # return list of services
-        if self: return p.stdout.rstrip().split()
+        return p.stdout.rstrip().split()
 
 
     def exclude_services(self, exclu_file: str | os.PathLike) -> List[str]:
@@ -68,7 +71,7 @@ class SiteSOS:
 
         services = self.get_services()
 
-        with open(exclu_file, 'r') as f:
+        with open(exclu_file, 'r', encoding='utf8') as f:
             lines = f.read()
 
         for line in filter(None, lines.split('\n')):  # filter empty and split line
@@ -76,13 +79,13 @@ class SiteSOS:
                 try:
                     services.remove(line)  # remove service from the list
                 except ValueError:
-                    print('-W-: %s not in service list' % line)
+                    print(f'-W-: {line} not in service list')
 
         print('-I- Excluding service(s): ',
               [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
 
         return services
-    
+
 
     def get_disks(self) -> Iterator[str]:
         """sosmgr command returns strings for primary and cache disks"""
@@ -97,35 +100,36 @@ class SiteSOS:
         # This command gives primary and cache paths of all services
         sos_cmd = "/opt/cliosoft/latest/bin/sosmgr service get -o csv -cpa -pp -pcl -s " + ','.join(services)
         p = subprocess.run(sos_cmd, capture_output=True, check=True, text=True, shell=True)
-        if p.returncode: print(p.stderr)
+        if p.returncode:
+            print(p.stderr)
 
         # split string to lines and also filter empty lines
         for line in filter(None, p.stdout.split('\n')):
             yield line.rstrip().split(',')  # split() for a list
-            
+
 
     def create_disk_file(self, disk_file) -> None:
         """Write primary and cache paths to file"""
 
         seen = set()
-        with open(disk_file, 'w', newline='') as file:
+        with open(disk_file, 'w', newline='', encoding='utf8') as file:
             for line in self.get_disks():
-                if re.match(r'/bsite/b', line[0]): continue  # skip header row
-                # os.path gives string, pathlib.Path gives instance
+                if re.match(r'site', line[0]):
+                    continue  # skip header row
+                # os.path gives string vs. pathlib.Path gives instance of a path
                 cache = os.path.dirname(line[2])
                 locality = line[3].lower()
                 repo = os.path.dirname(line[4])
-                
 
-                if locality.lower() == 'local' and repo not in seen:
+                if locality == 'local' and repo not in seen:
                     seen.add(repo)          # use set to track disk names
                     file.write(repo + '\n') # file.write works with string
                 if cache not in seen:
                     seen.add(cache)         # use set to track disk names
                     file.write(cache + '\n')
 
-        # unix sed command to substitute string 'sitecode' to  string 'site' on the disk
-        # str(PosixPath) prevents error "can only concatenate str (not "PosixPath") to str"
+        # unix sed command to substitute string 'sitecode' to  string 'site' of the path
+        # str(PosixPath) solves error "can only concatenate str (not "PosixPath") to str"
         subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(disk_file), check=True, shell=True)
 
 
@@ -133,18 +137,17 @@ class SiteSOS:
         """Available disk space. See shutil mode for more info
         (2**30) converts bytes to GB, // keeps only integer number
         """
-        if self: return [x // (2**30) for x in shutil.disk_usage(disk)]
+        return [x // (2**30) for x in shutil.disk_usage(disk)]
 
 
-def main():
+def main() -> None:
+    """ Main """
 
-    # Requires SOS_SERVERS_DIR variable if not already set in the environment 
+    ## Requires SOS_SERVERS_DIR variable if not already set in the environment
     # os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
-    import utils as util
-
     sos = SiteSOS('ddm')
-    LIMIT: int = 250  # threshold disk size value 250GB
+    limit: int = 250  # threshold disk size value 250GB
     recipient = "linh.a.nguyen@intel.com"
 
     disk_file = Path(data_path, sos.disk_file)
@@ -164,48 +167,50 @@ def main():
     ### demo code
     # disk = /nfs/site/disks/hipipde_soscache_010 (pdx)
     # _disk = '/nfs/site/disks/hipipde.sosrepo.007'
-    # _disk = '/nfs/site/disks/ddmtest_sosrepo_001'
+    #_disk = '/nfs/site/disks/ddmtest_sosrepo_001'
     # _size, _space = sos.disk_space_status(_disk)
     # util.increase_disk_size(_disk, 1000)
     # print(util.has_size_been_increased(_disk))
+    # _disk2 = '/nfs/site/disks/ddmtest_soscache_001'
+    # print(util.has_size_been_increased(_disk2))
     ###
 
+    disks = Path(disk_file).read_text(encoding='utf-8').strip().splitlines()
+
+    messages: List[str] = []
     # check each disk for available space
-    # disks = []
-    with open(disk_file, 'r') as f:
-        disks = f.read().splitlines()
-
-    # check each disk for available space 
-    msg = ''
     for disk in sorted(disks, key=os.path.basename):
-        #disk_size, _, avail_space = sos.disk_space_status(disk)
         disk_size, _, avail_space = sos.disk_space_status(disk)
-        
-        if avail_space < LIMIT:
-            msg += f"{disk} Size(GB): {disk_size}; Avail(GB): {avail_space} *** Low disk space" + '\n'
 
-            # Test 1:
-            # Test if it is sending email
-            # Option 2:
-            # sos.increase_disk_size(disk, 50)
-            #   email status/error
+        # steps to take if disk belows the limit
+        if avail_space < limit:
+            messages.append(f"-W- {disk} Size(GB): {disk_size}; Avail(GB): {avail_space} *** Low disk space")
+            was_increased = util.was_disk_size_been_increased(disk, day=7)
+            # print(was_increased)
 
+            if was_increased is None:
+                messages.append(f"-I- Increasing {disk} disk size")
+                #status, output = util.increase_disk_size(disk, adding=10)
+                #status, output = (False, 'something text')
+            elif was_increased is True:
+                messages.append(f"-W- {disk} size was increased recently...Need investigation")
+            elif was_increased is False:
+                messages.append(f"-F- Failed to check disk {disk}...Got unexpected result")
         else:
-            print(f"{disk} [ Size(GB): {disk_size}; Avail(GB): {avail_space} ]")
+            print(f"-I- {disk} [ Size(GB): {disk_size}; Avail(GB): {avail_space} ]")
 
-    # email users
-    if msg:
-        import email_user as m
+    # email user(s)
+    if messages:
         subject = f"Alert: {sos.site} Cliosoft disk is low on space"
         to_email = recipient
         from_email = recipient
-        # m.send_email(subject, msg, to_email, from_email)
-        pp(msg)
+        # email.send_email(subject, '\n'.join(messages), to_email, from_email)
+        pp(messages)
 
 
 if __name__ == '__main__':
     main()
 
-# # Release the lock (optional)
-# os.close(lock_fd)
-# os.unlink(lock_file)
+# Release the lock (optional)
+os.close(lock_fd)
+os.unlink(lock_file)
