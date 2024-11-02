@@ -4,6 +4,7 @@ import subprocess
 import re
 import shlex
 import fcntl
+import csv
 from pprint import pprint as pp
 from typing import List, Iterator
 from pathlib import Path
@@ -52,7 +53,6 @@ class SiteSOS:
         self.disk_file = Path(data_path, f"{self.site.upper()}_cliosoft_disks.txt")
         self.excluded_file = Path(data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
         # --force-new-data, -fn ( if adding excluded services or when services down)
-
 
 
     def get_services(self) -> List[str]:
@@ -150,11 +150,11 @@ def main() -> None:
 
     if util.file_older_than(disk_file, day=1):  # older than 1 day
         try:
-            print('Data file is more than a day old...Recreate data file')
+            print('Disk file is more than a day old...Re-create data file')
             os.remove(disk_file)
             sos.create_disk_file(disk_file)
         except OSError:
-            print('-E- Failed to remove data file')
+            print('-E- Failed to remove disk file')
 
     ### demo code
     # disk = /nfs/site/disks/hipipde_soscache_010 (pdx)
@@ -169,40 +169,50 @@ def main() -> None:
 
     disks = Path(disk_file).read_text(encoding='utf-8').strip().splitlines()
 
-    messages: List[str] = []
-    # check each disk for available space
+    # compute sos disk usages
+    tmp_array = []
     for disk in sorted(disks, key=os.path.basename):
-        disk_size, _, avail_space = util.disk_space_status(disk)
+        size, used, avail = util.disk_space_status(disk)
+        tmp_array.append([disk, size, used, avail])
 
-        # steps to take if disk belows the limit
-        if avail_space < limit:
-            messages.append(f"-W- {disk} Size(GB): {disk_size}; Avail(GB): {avail_space} *** Low disk space")
-            was_increased = util.was_disk_size_been_increased(disk, day=7)
+    # output disk usages to csv file
+    csv_file = Path(data_path, f"{sos.site}_disk_usages.csv")
+    with open(csv_file, 'w', newline='') as file:
+        csv_writer = csv.writer(file)
+        csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
+        for row in tmp_array:
+            csv_writer.writerow(row)
 
-            match was_increased:
+    messages: List[str] = []
+    low_disk_space = []
+    with open(csv_file, 'r') as file:    # steps to take if disk belows the limit
+        csv_reader = csv.DictReader(file)
+        for row in csv_reader:
+            disk, size, avail  = row['Disk'], row['Total'], row['Available']
+
+            messages.append(f"-W- {disk} Size(GB): {size}; Avail(GB): {avail} *** Low disk space")
+            answer = util.has_size_been_increased(disk, day=7)
+            match answer:
                 case None:
-                    messages.append(f"-I- Increasing {disk} disk size now")
-                    #status, output = util.increase_disk_size(disk, adding=10)
-                    status, output = (True, 'something good')
-                    if status:
-                        messages.append(f"-I- {output}")
-                    else:
-                        messages.append(f"-E- {output}")
+                    pass
+                    # status, output = util.increase_disk_size(disk, adding=10)
+                    # messages.append()
                 case True:
+                    pass
                     messages.append(f"-E- {disk} size was increased recently...Need investigation")
                 case False:
+                    pass
                     messages.append(f"-F- Failed to check disk {disk}...Got unexpected result")
                 case _:
                     raise ValueError("-F- Not a correct value")
-        else:
-            print(f"-I- {disk} [ Size(GB): {disk_size}; Avail(GB): {avail_space} ]")
+
 
     # email user(s)
     if messages:
         subject = f"Cliosoft Alert: {sos.site} disk is low on space"
         to_person = recipient
         from_person = recipient
-        # email.send_email(subject, '\n'.join(messages), to_person, from_person)
+        email.send_email(subject, '\n'.join(messages), to_person, from_person)
         pp(messages)
 
 

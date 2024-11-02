@@ -41,8 +41,10 @@ def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
     """
     # <size> /(2**30) return  GB from Bytes; // division and returns the integer part of the result (rounding down)
     size = (shutil.disk_usage(_disk)[0]) // (2**30)
+    # nearest hundredth or tenth digit
     by_number = 100 if size >= 1000 else 10
     new_size = (size // by_number * by_number) + adding  # the // for only integer
+
     print(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
     stod_cmd = f"/usr/intel/bin/stod resize --cell {THIS_SITE} \
                 --path {_disk} --size {new_size}GB --immediate --exceed-forecast"
@@ -64,7 +66,7 @@ def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
 
 
 
-def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
+def has_size_been_increased(_disk: str, day: int = 7) -> bool:
     """read START history if disk size has been increased
     1) Expected output. There may be a blank line in output depending on OS
     Type,SubmitTime
@@ -84,13 +86,13 @@ def was_disk_size_been_increased(_disk: str, day: int = 7) -> bool:
         p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
         print(p.stdout)
         # analyze output
-        match_1 = re.search(r"stod\s+resize", p.stdout)
-        match_2 = re.search(r"Type,SubmitTime", p.stdout)
+        match_true = re.search(r"stod\s+resize", p.stdout)
+        match_none = re.search(r"Type,SubmitTime", p.stdout)
 
-        if match_1:
-            result = True # disk has been increased
-        elif match_2:
-            result = None # not been increased lately
+        if match_none:
+            result = None # disk has not been increased recently
+        elif match_true:
+            result = True # size has been increased lately
         else:
             result = False
     except subprocess.CalledProcessError as er:
