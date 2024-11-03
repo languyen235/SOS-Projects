@@ -6,7 +6,6 @@ import shlex
 import fcntl
 import csv
 import argparse
-from ast import parse
 from pprint import pprint as pp
 from typing import List, Iterator, Tuple
 from pathlib import Path
@@ -18,8 +17,14 @@ import email_user as email
 
 
 def lock_script(lockf_: str):
-    """ Create a lock file to indicate script is currently running.
-        Should only be one instant of this script running at any given time
+    """
+    Locks a file pertaining to this script so that it cannot be run simultaneously.
+
+    Since the lock is automatically released when this script ends, there is no
+    need for an unlock function for this use case.
+
+    Returns:
+        lockfile if lock was acquired. Otherwise print error exists.
     """
     try:
         # Try to acquire an exclusive lock on the file
@@ -34,11 +39,6 @@ def lock_script(lockf_: str):
 lock_file = "/tmp/sos_checkdisk.lock"
 lock_fd = lock_script(lock_file)
 
-# Directory for data and logs
-data_path = Path('/opt/cliosoft/monitoring')
-if not data_path.exists():
-    data_path.mkdir(mode=0o775, parents=True, exist_ok=True)
-
 class SubprocessFailed(Exception):
     """Custom SubprocessFailed"""
     def __init__(self, message, exit_code, stderr):
@@ -50,8 +50,14 @@ class SubprocessFailed(Exception):
 class SiteSOS:
     """Cliosoft site"""
 
+    site_string_ = 'sc, sc1, sc4, sc8, pdx, iil, png, iind, vr'
+    zsc_ = [f"zsc{n}" for n in (4, 7, 9, 10, 11, 12, 14, 15, 16, 18)]
+    sites = re.sub(r'\s+', '', site_string_).split(',') + zsc_
+
     # Directory for data and logs
     data_path = Path('/opt/cliosoft/monitoring')
+
+    # make path
     if not data_path.exists():
         data_path.mkdir(mode=0o775, parents=True, exist_ok=True)
 
@@ -60,7 +66,9 @@ class SiteSOS:
         self.site = site
         self.disk_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
         self.excluded_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
-        # --force-new-data, -fn ( if adding excluded services or when services down)
+
+        if self.site in SiteSOS.sites:
+            os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
 
     def get_services(self) -> List[str]:
@@ -185,24 +193,29 @@ def main() -> None:
     ## Requires SOS_SERVERS_DIR variable if not already set in the environment
     # os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
-    # --force-new-data, -fn ( if adding excluded services or when services down)
-
     parser = argparse.ArgumentParser(
-        description='Monitoring Cliosoft disk usages',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""\
+        Script for monitoring Cliosoft disk usages
+        Data file is refreshed every 24 hours
+        You can use -n | --new to  create a new data file.
+    """
     )
     parser.add_argument("-n", "--new", action="store_true", help='Create new data file')
     args = parser.parse_args()
+
+    # THIS_SITE = subprocess.getoutput('echo $EC_ZONE', encoding='utf-8')
+    # sos = SiteSOS(THIS_SITE)
 
     sos = SiteSOS('ddm')
     limit: int = 250  # threshold disk size value 250GB
     recipient = "linh.a.nguyen@intel.com"
 
-    disk_file = Path(data_path, sos.disk_file)
     if args.new:
-        os.remove(disk_file)
-    sos.create_disk_file(disk_file)
+        os.remove(sos.disk_file)
+    sos.create_disk_file(sos.disk_file)
 
-    all_disks = Path(disk_file).read_text(encoding='utf-8').strip().splitlines()
+    all_disks = Path(sos.disk_file).read_text(encoding='utf-8').strip().splitlines()
 
     # compute disk usages and save result to list
     tmp_array = []
@@ -213,7 +226,7 @@ def main() -> None:
         if avail <= limit: attention += ([disk, size, used, avail],)
 
     # write list of disk usages to csv file
-    csv_file = Path(data_path, f"{sos.site}_disk_usages.csv")
+    csv_file = Path(SiteSOS.data_path, f"{sos.site}_disk_usages.csv")
     with open(csv_file, 'w', newline='') as file:
         csv_writer = csv.writer(file)
         csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
