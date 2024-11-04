@@ -9,11 +9,13 @@ import argparse
 from pprint import pprint as pp
 from typing import List, Iterator, Tuple
 from pathlib import Path
+from functools import wraps
 
 from UsrIntel.R1 import os, sys
 
 import utils as util
 import email_user as email
+
 
 
 def lock_script(lockf_: str):
@@ -24,7 +26,7 @@ def lock_script(lockf_: str):
     need for an unlock function for this use case.
 
     Returns:
-        lockfile if lock was acquired. Otherwise print error exists.
+        lockfile if lock was acquired. Otherwise, print error and exists.
     """
     try:
         # Try to acquire an exclusive lock on the file
@@ -39,33 +41,26 @@ def lock_script(lockf_: str):
 lock_file = "/tmp/sos_checkdisk.lock"
 lock_fd = lock_script(lock_file)
 
-class SubprocessFailed(Exception):
-    """Custom SubprocessFailed"""
-    def __init__(self, message, exit_code, stderr):
-        super().__init__(message)
-        self.exit_code = exit_code
-        self.stderr = stderr
-
 
 class SiteSOS:
     """Cliosoft site"""
-
     site_string_ = 'sc, sc1, sc4, sc8, pdx, iil, png, iind, vr'
     zsc_ = [f"zsc{n}" for n in (4, 7, 9, 10, 11, 12, 14, 15, 16, 18)]
     sites = re.sub(r'\s+', '', site_string_).split(',') + zsc_
+    this_site = subprocess.getoutput('echo $EC_ZONE', encoding='utf-8')
 
     # Directory for data and logs
     data_path = Path('/opt/cliosoft/monitoring')
 
     # make path
     if not data_path.exists():
-        data_path.mkdir(mode=0o775, parents=True, exist_ok=True)
-
+        data_path.mkdir(mode=0o775, parents=True)
+        
 
     def __init__(self, site):
         self.site = site
-        self.data_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
-        self.excluded_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
+        self.data_file_path = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
+        self.excluded_file_path = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
 
         if self.site in SiteSOS.sites:
             os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
@@ -78,7 +73,8 @@ class SiteSOS:
         try:
             p = subprocess.run(shlex.split(cmd), capture_output=True, check=True, text=True)
         except subprocess.CalledProcessError as e:
-            raise SubprocessFailed("Subprocess failed", e.returncode, e.stderr) from e
+            print("Subprocess failed", e.returncode, e.stderr)
+            sys.exit(1)
 
         # return list of services
         return p.stdout.rstrip().split()
@@ -110,9 +106,9 @@ class SiteSOS:
         """sosmgr command returns strings for primary and cache disks"""
 
         # get service names and check for excluding services
-        if self.excluded_file.exists():
+        if self.excluded_file_path.exists():
             print('-I- Found service(s) to be excluded')
-            services = SiteSOS.exclude_services(self.excluded_file)
+            services = SiteSOS.exclude_services(self.excluded_file_path)
         else:
             services = SiteSOS.get_services()
 
@@ -129,6 +125,7 @@ class SiteSOS:
 
     def decorator_file_older_than(func):
         """Delete and re-create file"""
+        @wraps(func)
         def wrapper(self, *args, **kwargs):
             file_ = args[0]
             if file_.exists() and util.file_older_than(file_, day=1):  # older than 1 day
@@ -144,7 +141,7 @@ class SiteSOS:
 
     @decorator_file_older_than
     def create_data_file(self, file_) -> None:
-        """Write primary and cache paths to file"""
+        """Saves primary and cache paths to file"""
         seen = set()
         print('-I- Create data file')
         with open(file_, 'w', newline='', encoding='utf-8') as file:
@@ -167,6 +164,16 @@ class SiteSOS:
         # str(PosixPath) solves error "can only concatenate str (not "PosixPath") to str"
         subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(file_), check=True, shell=True)
 
+
+def write_to_csv_file(csv_file, data: Tuple[str]):
+    """Pass"""
+    with open(csv_file, 'w', encoding='utf-8', newline='') as file:
+        csv_writer = csv.writer(file)
+        csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
+        for row in data:
+            csv_writer.writerow(row)
+
+
 def perform_check(list_: Tuple) -> List:
     """Pass"""
     messages = []
@@ -178,12 +185,11 @@ def perform_check(list_: Tuple) -> List:
             case None:
                 pass
                 # status, output = util.increase_disk_size(disk, adding=10)
-                # messages.append()
+                # messages.append(output)
             case True:
-                pass
                 messages.append(f"-E- {disk} size was increased recently...Need investigation")
             case False:
-                pass
+
                 messages.append(f"-F- Failed to check disk {disk}...Got unexpected result")
             case _:
                 raise ValueError("-F- Not a correct value")
@@ -206,38 +212,32 @@ def main() -> None:
     parser.add_argument("-n", "--new", action="store_true", help='Create new data file')
     args = parser.parse_args()
 
-    print(type(args))
-
     sos = SiteSOS('ddm')
+    # sos = SiteSOS(SiteSOS.this_site)
     limit: int = 250  # threshold disk size value 250GB
     recipient = "linh.a.nguyen@intel.com"
 
     if args.new:
-        os.remove(sos.data_file)
-    sos.create_data_file(sos.data_file)
-
-    all_disks = Path(sos.data_file).read_text(encoding='utf-8').strip().splitlines()
+        os.remove(sos.data_file_path)
+    sos.create_data_file(sos.data_file_path)
 
     # compute disk usages and save result to list
-    tmp_array = []
+    all_disks = Path(sos.data_file_path).read_text(encoding='utf-8').strip().splitlines()
+    tmp_array = ()
     attention = ()
     for disk in sorted(all_disks, key=os.path.basename):
         size, used, avail = util.disk_space_status(disk)
-        tmp_array.append([disk, size, used, avail])
+        tmp_array += ([disk, size, used, avail],)
         if avail <= limit: attention += ([disk, size, used, avail],)
 
     # write list of disk usages to csv file
     csv_file = Path(SiteSOS.data_path, f"{sos.site}_disk_usages.csv")
-    with open(csv_file, 'w', newline='') as file:
-        csv_writer = csv.writer(file)
-        csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
-        for row in tmp_array:
-            csv_writer.writerow(row)
+    write_to_csv_file(csv_file,tmp_array)
+
 
     if attention:
         print(attention)
         messages = perform_check(attention)
-
         # email user(s)
         subject = f"Cliosoft Alert: {sos.site} disk is low on space"
         to_person = recipient

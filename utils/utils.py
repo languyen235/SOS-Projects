@@ -50,19 +50,16 @@ def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
                 --path {_disk} --size {new_size}GB --immediate --exceed-forecast"
     print(stod_cmd)
 
-    do_it = False
-    status = ()
-    if do_it is True:
-        try:
-            p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
-            reg_result = re.search(r'successfully', p.stdout, re.I).group(0)
-            if reg_result:
-                return True, reg_result
-            else:
-                return False, p.stdout
-        except subprocess.CalledProcessError as er:
-            print(f"-F- Disk resizing failed: {er.stderr}")
-            return False, er.stderr
+    try:
+        p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
+        reg_result = re.search(r'successfully', p.stdout, re.I).group(0)
+        if reg_result:
+            return True, reg_result
+        else:
+            return False, p.stderr
+    except subprocess.CalledProcessError as er:
+        print(f"-F- Disk resizing failed: {er.stderr}")
+        return False, er.stderr
 
 
 
