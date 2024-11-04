@@ -64,14 +64,15 @@ class SiteSOS:
 
     def __init__(self, site):
         self.site = site
-        self.disk_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
+        self.data_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
         self.excluded_file = Path(SiteSOS.data_path, f"{self.site.upper()}_cliosoft_excluded_services.txt")
 
         if self.site in SiteSOS.sites:
             os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
 
-    def get_services(self) -> List[str]:
+    @staticmethod
+    def get_services() -> List[str]:
         """Get list of SOS services from Unix env using subprocess"""
         cmd = "/opt/cliosoft/latest/bin/sosadmin list"
         try:
@@ -83,10 +84,11 @@ class SiteSOS:
         return p.stdout.rstrip().split()
 
 
-    def exclude_services(self, exclu_file: str | os.PathLike) -> List[str]:
+    @staticmethod
+    def exclude_services(exclu_file: str | os.PathLike) -> List[str]:
         """Remove service(s) from service list"""
 
-        services = self.get_services()
+        services = SiteSOS.get_services()
 
         with open(exclu_file, 'r', encoding='utf8') as f:
             lines = f.read()
@@ -110,9 +112,9 @@ class SiteSOS:
         # get service names and check for excluding services
         if self.excluded_file.exists():
             print('-I- Found service(s) to be excluded')
-            services = self.exclude_services(self.excluded_file)
+            services = SiteSOS.exclude_services(self.excluded_file)
         else:
-            services = self.get_services()
+            services = SiteSOS.get_services()
 
         # This command gives primary and cache paths of all services
         sos_cmd = "/opt/cliosoft/latest/bin/sosmgr service get -o csv -cpa -pp -pcl -s " + ','.join(services)
@@ -128,24 +130,24 @@ class SiteSOS:
     def decorator_file_older_than(func):
         """Delete and re-create file"""
         def wrapper(self, *args, **kwargs):
-            disk_file = args[0]
-            if disk_file.exists() and util.file_older_than(disk_file, day=1):  # older than 1 day
+            file_ = args[0]
+            if file_.exists() and util.file_older_than(file_, day=1):  # older than 1 day
                 try:
                     print('-I- Data file is more than a day old...Re-create data file')
-                    os.remove(disk_file)
+                    os.remove(file_)
                 except OSError:
                     print("-E- Failed to remove data file")
-            if not disk_file.exists():
+            if not file_.exists():
                 func(self, *args, **kwargs)
         return wrapper
 
 
     @decorator_file_older_than
-    def create_disk_file(self, disk_file) -> None:
+    def create_data_file(self, file_) -> None:
         """Write primary and cache paths to file"""
         seen = set()
         print('-I- Create data file')
-        with open(disk_file, 'w', newline='', encoding='utf-8') as file:
+        with open(file_, 'w', newline='', encoding='utf-8') as file:
             for line in self.get_disks():
                 if re.match(r'site', line[0]):
                     continue  # skip header row
@@ -163,7 +165,7 @@ class SiteSOS:
 
         # unix sed command to substitute string 'sitecode' to  string 'site' of the path
         # str(PosixPath) solves error "can only concatenate str (not "PosixPath") to str"
-        subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(disk_file), check=True, shell=True)
+        subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(file_), check=True, shell=True)
 
 def perform_check(list_: Tuple) -> List:
     """Pass"""
@@ -204,18 +206,17 @@ def main() -> None:
     parser.add_argument("-n", "--new", action="store_true", help='Create new data file')
     args = parser.parse_args()
 
-    # THIS_SITE = subprocess.getoutput('echo $EC_ZONE', encoding='utf-8')
-    # sos = SiteSOS(THIS_SITE)
+    print(type(args))
 
     sos = SiteSOS('ddm')
     limit: int = 250  # threshold disk size value 250GB
     recipient = "linh.a.nguyen@intel.com"
 
     if args.new:
-        os.remove(sos.disk_file)
-    sos.create_disk_file(sos.disk_file)
+        os.remove(sos.data_file)
+    sos.create_data_file(sos.data_file)
 
-    all_disks = Path(sos.disk_file).read_text(encoding='utf-8').strip().splitlines()
+    all_disks = Path(sos.data_file).read_text(encoding='utf-8').strip().splitlines()
 
     # compute disk usages and save result to list
     tmp_array = []
