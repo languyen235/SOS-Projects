@@ -1,6 +1,6 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-from typing import List, Tuple, Iterator, Union
+from typing import List
 import subprocess
 import re
 import time
@@ -33,8 +33,8 @@ def file_older_than(file_path: str | os.PathLike, day: int = 1):
     return result
 
 
-def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
-    """Increase disk size with START command
+def increase_disk_size(_disk: str, adding: int=500) -> str:
+    """Increase disk size (500GB) using START command
     1. Expected output for success:
     Your request is being processed
     successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
@@ -46,26 +46,25 @@ def increase_disk_size(_disk: str, adding: int = 500) -> Tuple[bool, str]:
     new_size = (size // by_number * by_number) + adding  # the // for only integer
 
     print(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
-    stod_cmd = f"/usr/intel/bin/stod resize --cell {THIS_SITE} \
-                --path {_disk} --size {new_size}GB --immediate --exceed-forecast"
+    stod_cmd = f"/usr/intel/bin/stod resize --cell {THIS_SITE} " + \
+               f"--path {_disk} --size {new_size}GB --immediate --exceed-forecast"
     print(stod_cmd)
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
-        reg_result = re.search(r'successfully', p.stdout, re.I).group(0)
+        reg_result = re.search(r'successfully.*$', p.stdout, re.I).group()
         if reg_result:
-            return True, reg_result
+            return f"-I- {reg_result}"
         else:
-            return False, p.stderr
+            return f"-F- Disk resizing failed: {p.stderr}"
     except subprocess.CalledProcessError as er:
-        print(f"-F- Disk resizing failed: {er.stderr}")
-        return False, er.stderr
+        return f"-F- Exception occurred: {er.stderr}"
 
 
 
-def has_size_been_increased(_disk: str, day: int = 7) -> bool:
-    """read START history if disk size has been increased
-    1) Expected output. There may be a blank line in output depending on OS
+def has_size_been_increased(disk_: str, day: int=2) -> bool|None:
+    """read START history if disk size has been increased since the last 2 days
+    1) Expected output (There may be a blank line in output depending on OS)
     Type,SubmitTime
     stod resize,10/24/2024 13:47:04
     2) Output as False:
@@ -73,7 +72,7 @@ def has_size_been_increased(_disk: str, day: int = 7) -> bool:
     3) Timeout error from START
     Error: request timed out, please try with --timeout switch
     """
-    d = Path(_disk)
+    d = Path(disk_)
     cmd: str = '/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history ' + \
         f"{day}d " + \
         f"--number 1 \"description=~'{d.name}' && type=~'resize'\""
@@ -89,11 +88,12 @@ def has_size_been_increased(_disk: str, day: int = 7) -> bool:
         if match_none:
             result = None # disk has not been increased recently
         elif match_true:
-            result = True # size has been increased lately
+            result = True # size was increased lately
         else:
+            print("-E- Error: %s" % p.stderr)
             result = False
     except subprocess.CalledProcessError as er:
-        print(er.stderr)
+        print("-E- Exception occurred: %s" % er.stderr)
         result = False
 
     return result
@@ -105,3 +105,24 @@ def disk_space_status(disk: str):
     Returns a list [total, used, available]
     """
     return [x // (2**30) for x in shutil.disk_usage(disk)]
+
+
+def exclude_services(exclu_file: str | os.PathLike) -> List[str]:
+    """Remove service(s) from service list"""
+    # services = SiteSOS.get_sos_services()
+    services = []
+
+    with open(exclu_file, 'r', encoding='utf8') as f:
+        lines = f.read()
+
+    for line in filter(None, lines.split('\n')):  # filter empty and split line
+        if not line.startswith('#'):
+            try:
+                services.remove(line)  # remove service from the list
+            except ValueError:
+                print(f'-W-: {line} not in service list')
+
+    print('-I- Excluding service(s): ',
+          [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
+
+    return services
