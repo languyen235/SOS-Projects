@@ -1,5 +1,7 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
+import os
+import sys
 import csv
 import fcntl
 import re
@@ -10,7 +12,7 @@ from pathlib import Path
 from pprint import pprint as pp
 from typing import List, Iterator, Tuple
 
-from UsrIntel.R1 import os, sys
+# from UsrIntel.R1 import os, sys
 
 import utils as util
 import email_user as email
@@ -62,7 +64,7 @@ class SiteSOS:
     zsc_ = [f"zsc{n}" for n in (4, 7, 9, 10, 11, 12, 14, 15, 16, 18)]
     sites = re.sub(r'\s+', '', site_string_).split(',') + zsc_
     this_site = subprocess.getoutput('echo $EC_ZONE', encoding='utf-8')
-    ddm_contacts = ['linh.a.nguyen@intel.com', 'syncadm@intel.com']
+    ddm_contacts = ['linh.a.nguyen@intel.com']
 
     # Directory for data and logs
     data_path = Path('/opt/cliosoft/monitoring')
@@ -85,6 +87,8 @@ class SiteSOS:
         cmd = "/opt/cliosoft/latest/bin/sosadmin list"
         try:
             p = subprocess.run(shlex.split(cmd), capture_output=True, check=True, text=True)
+            if not p.stdout:
+                raise ValueError('-F- Operation failed...No SOS service found')
         except subprocess.CalledProcessError as e:
             print("Subprocess failed", e.returncode, e.stderr)
             sys.exit(1)
@@ -94,15 +98,16 @@ class SiteSOS:
 
     @staticmethod
     def get_sos_disks() -> Iterator[str]:
-        """sosmgr command returns strings for primary and cache disks"""
+        """sosmgr command yields strings for primary and cache disks"""
 
         services = SiteSOS.get_sos_services()
-
         # This command gives primary and cache paths of all services
         sos_cmd = "/opt/cliosoft/latest/bin/sosmgr service get -o csv -cpa -pp -pcl -s " + ','.join(services)
-        p = subprocess.run(sos_cmd, capture_output=True, check=True, text=True, shell=True)
-        if p.returncode:
-            print(p.stderr)
+        try:
+            p = subprocess.run(sos_cmd, capture_output=True, check=True, text=True, shell=True)
+        except subprocess.CalledProcessError as e:
+            print("Subprocess.run failed", e.returncode, e.stderr)
+            sys.exit(1)
 
         # split string to lines and also filter empty lines
         for line in filter(None, p.stdout.split('\n')):
@@ -110,30 +115,28 @@ class SiteSOS:
 
 
     @decorator_file_creation
-    def create_data_file(self, file_) -> None:
+    def create_data_file(self, out_file) -> None:
         """Saves primary and cache paths to file"""
         seen = set()
         print('-I- Create data file')
-        with open(file_, 'w', newline='', encoding='utf-8') as file:
+        with open(out_file, 'w', newline='', encoding='utf-8') as file:
             for line in SiteSOS.get_sos_disks():
                 if re.match(r'site', line[0]):
                     continue  # skip header row
                 # os.path gives string vs. pathlib.Path gives instance of a path
-                cache = os.path.dirname(line[2])
+                cache = Path(line[2]).parent
                 locality = line[3].lower()
-                repo = os.path.dirname(line[4])
+                repo = Path(line[4]).parent
 
                 if locality == 'local' and repo not in seen:
                     seen.add(repo)          # use set to track disk names
-                    file.write(repo + '\n') # file.write works with string
+                    file.write(str(repo) + '\n') # file.write works with string
                 if cache not in seen:
                     seen.add(cache)         # use set to track disk names
-                    file.write(cache + '\n')
+                    file.write(str(cache) + '\n')
 
         # unix sed command to substitute string 'sitecode' to  string 'site' of the path
-        # str(PosixPath) solves error "can only concatenate str (not "PosixPath") to str"
-        subprocess.run("sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' " + str(file_), check=True, shell=True)
-
+        subprocess.run(f"sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' {str(out_file)}", check=True, shell=True)
 
 
 def check_disk_space(obj):
@@ -149,7 +152,7 @@ def check_disk_space(obj):
 
 
 def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
-    """Pass"""
+    """Save data to cvs file"""
     with open(csv_file, 'w', encoding='utf-8', newline='') as file:
         csv_writer = csv.writer(file)
         csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
@@ -157,25 +160,25 @@ def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
             csv_writer.writerow(row)
 
 
-def perform_check(list_: Tuple) -> List[str]:
-    """Pass"""
+def perform_check(problem_disks: Tuple, add_space=False) -> List[str]:
+    """
+    Iterate over a tuple of disks for disk name, size and space.
+    Generate messages for low disk space and recent disk size increases.
+    With option to increase disk size.
+    """
     messages = []
-    for line in list_:
+    print(problem_disks)
+    for line in problem_disks:
         disk, size, _, avail = line
         messages.append(f"-W- {disk} Size={size}GB; Avail={avail}GB *** Low disk space")
 
-        # check if size has been increased recently
-        # answer = util.has_size_been_increased(disk, day=7)
-        match util.has_size_been_increased(disk, day=2):
-            case None:
-                pass
-                # messages.append(util.increase_disk_size(disk, adding=10))
-            case True:
-                messages.append(f"-W- {disk} size was increased recently...Need reviewing")
-            case False:
-                messages.append(f"-F- Unexpected result...Check disk failed.")
-            case _:
-                raise ValueError("-F- Not a correct value")
+        if result := util.has_size_been_increased(disk, day=2):
+            messages.append(f"-W- {disk} size was increased recently...Need investigation")
+        elif result is None:
+            if add_space:
+                messages.append(util.increase_disk_size(disk, adding=10))
+        else:
+            messages.append('-E- Disk check failed')
     return messages
 
 
@@ -188,9 +191,11 @@ def validate_cmd_line():
         Script for monitoring Cliosoft disk usages
         Data file refreshes every 24 hours
         Use -n | --new to  create a new data file.
+        Use -as | --add_size to increase disk space.
     """
     )
-    parser.add_argument("-n", "--new", action="store_true", help='Create a new data file')
+    parser.add_argument("-nd", "--new_data_file", action="store_true", default=False, help='Create a new data file')
+    parser.add_argument("-as", "--add_size", action="store_true", default=False, help='Increase disk size')
     return parser.parse_args()
 
 
@@ -199,27 +204,29 @@ def main() -> None:
     ## Requires SOS_SERVERS_DIR variable if not already set in the environment
     # os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
-    parser_args = validate_cmd_line()
+    cli_args = validate_cmd_line()
+    new_data_file = bool(cli_args.new_data_file)
+    add_size = bool(cli_args.add_size)
 
     sos = SiteSOS('ddm')
     # sos = SiteSOS(SiteSOS.this_site)
-    if parser_args.new:
+    if new_data_file:
         os.remove(sos.data_file_path)
+
     sos.create_data_file(sos.data_file_path)
 
     # check disk space
     all_disks, low_space = check_disk_space(sos)
 
     if low_space:
-        # print(low_space)
         recipient = "linh.a.nguyen@intel.com"
-        messages = '\n'.join(perform_check(low_space))
+        messages = '\n'.join(perform_check(low_space, add_size))
         # email user(s)
         subject = f"Cliosoft Alert: {sos.site} disk is low on space"
         to_person = ';'.join(SiteSOS.ddm_contacts)
         from_person = recipient
-        email.send_email(subject, messages, to_person, from_person)
-        pp(messages)
+        # email.send_email(subject, messages, to_person, from_person)
+        print(messages)
 
     # save disk usages to csv file
     csv_file = Path(sos.data_path, f"{sos.site}_disk_usages.csv")
@@ -232,14 +239,3 @@ if __name__ == '__main__':
 # Release the lock (optional)
 os.close(lock_fd)
 os.unlink(lock_file)
-
-### demo code
-    # disk = /nfs/site/disks/hipipde_soscache_010 (pdx)
-    # _disk = '/nfs/site/disks/hipipde.sosrepo.007'
-    #_disk = '/nfs/site/disks/ddmtest_sosrepo_001'
-    # _size, _space = disk_space_status(_disk)
-    # util.increase_disk_size(_disk, 1000)
-    # print(util.has_size_been_increased(_disk))
-    # _disk2 = '/nfs/site/disks/ddmtest_soscache_001'
-    # print(util.has_size_been_increased(_disk2))
-    ###
