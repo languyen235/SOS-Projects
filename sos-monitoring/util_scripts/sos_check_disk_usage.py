@@ -14,8 +14,8 @@ from typing import List, Iterator, Tuple
 
 # from UsrIntel.R1 import os, sys
 
-import utils as util
-import email_user as email
+from modules import utils as util
+from modules import email_user as email
 
 
 def lock_script(lockf_: str):
