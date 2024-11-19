@@ -2,8 +2,9 @@
 
 import smtplib
 from email.message import EmailMessage
+from typing import List
 
-def send_email(subject, body, to_email, from_email):
+def send_email(subject, body: List [str], to_email, from_email):
     """ Send email to user"""
 
     # with open(textfile) as fp:
@@ -15,7 +16,7 @@ def send_email(subject, body, to_email, from_email):
     msg['Subject'] = subject
     msg['From'] = from_email
     msg['To'] = to_email
-    msg.set_content(body)
+    msg.set_content("\n".join(body))
     
     # Send the message via our own SMTP server.
     s = smtplib.SMTP('localhost')

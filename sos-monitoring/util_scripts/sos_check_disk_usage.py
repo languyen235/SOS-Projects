@@ -3,94 +3,93 @@
 import os
 import sys
 import csv
-import fcntl
 import re
 import shlex
 import subprocess
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s')
+
 from functools import wraps
 from pathlib import Path
 from pprint import pprint as pp
 from typing import List, Iterator, Tuple
-
-# from UsrIntel.R1 import os, sys
-
 from modules import utils as util
 from modules import email_user as email
 
-
-def lock_script(lockf_: str):
-    """
-    Locks a file pertaining to this script so that it cannot be run simultaneously.
-
-    Since the lock is automatically released when this script ends, there is no
-    need for an unlock function for this use case.
-
-    Returns:
-        lockfile if lock was acquired. Otherwise, print error and exists.
-    """
-    try:
-        # Try to acquire an exclusive lock on the file
-        lockfd_ = os.open(lockf_, os.O_CREAT | os.O_RDWR, mode=0o644)
-        fcntl.lockf(lockfd_, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lockfd_
-    except IOError:
-        print("Another instance of the script is already running.")
-        sys.exit(1)
+# def lock_script(lockf_: str):
+#     """
+#     Locks a file pertaining to this script so that it cannot be run simultaneously.
+#
+#     Since the lock is automatically released when this script ends, there is no
+#     need for an unlock function for this use case.
+#
+#     Returns:
+#         lockfile if lock was acquired. Otherwise, print error and exists.
+#     """
+#     try:
+#         # Try to acquire an exclusive lock on the file
+#         lockfd_ = os.open(lockf_, os.O_CREAT | os.O_RDWR, mode=0o644)
+#         fcntl.lockf(lockfd_, fcntl.LOCK_EX | fcntl.LOCK_NB)
+#         return lockfd_
+#     except IOError:
+#         print("Another instance of the script is already running.")
+#         sys.exit(1)
 
 
 lock_file = "/tmp/sos_checkdisk.lock"
-lock_fd = lock_script(lock_file)
+lock_fd = util.lock_script(lock_file)
+
+# def decorator_file_creation(func):
+#     """Delete and re-create file"""
+#     @wraps(func)
+#     def wrapper(self, *args, **kwargs):
+#         file_ = args[0]
+#         if file_.exists() and util.file_older_than(file_, day=1):  # older than 1 day
+#             try:
+#                 print('-I- Data file is more than a day old...Re-create data file')
+#                 os.remove(file_)
+#             except OSError:
+#                 print("-E- Failed to remove data file")
+#         if not file_.exists():
+#             func(self, *args, **kwargs)
+#     return wrapper
 
 
-def decorator_file_creation(func):
-    """Delete and re-create file"""
-    @wraps(func)
-    def wrapper(self, *args, **kwargs):
-        file_ = args[0]
-        if file_.exists() and util.file_older_than(file_, day=1):  # older than 1 day
-            try:
-                print('-I- Data file is more than a day old...Re-create data file')
-                os.remove(file_)
-            except OSError:
-                print("-E- Failed to remove data file")
-        if not file_.exists():
-            func(self, *args, **kwargs)
-    return wrapper
-
-
-class SiteSOS:
+class ClioSite:
     """Cliosoft site"""
-    site_string_ = 'sc, sc1, sc4, sc8, pdx, iil, png, iind, vr'
-    zsc_ = [f"zsc{n}" for n in (4, 7, 9, 10, 11, 12, 14, 15, 16, 18)]
-    sites = re.sub(r'\s+', '', site_string_).split(',') + zsc_
+    site_names = 'sc, sc1, sc4, sc8, pdx, iil, png, iind, vr'
+    zones = [f"zsc{n}" for n in (4, 7, 9, 10, 11, 12, 14, 15, 16, 18)]
+    sites = re.sub(r'\s+', '', site_names).split(',') + zones
     this_site = subprocess.getoutput('echo $EC_ZONE', encoding='utf-8')
     ddm_contacts = ['linh.a.nguyen@intel.com']
 
     # Directory for data and logs
-    data_path = Path('/opt/cliosoft/monitoring')
-    if not data_path.exists():
-        data_path.mkdir(mode=0o775, parents=True)
-        
+    app_data_path = Path('/opt/cliosoft/monitoring')
+    app_log_path = Path('/opt/cliosoft/monitoring/log')
+    if not app_log_path.exists():
+        app_log_path.mkdir(mode=0o775, parents=True, exist_ok=True)
+
 
     def __init__(self, site):
         self.site = site
-        self.data_path = SiteSOS.data_path
-        self.data_file_path = Path(self.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
+        self.app_data_path = ClioSite.app_data_path
+        self.data_file_path = Path(ClioSite.app_data_path, f"{site.upper()}_cliosoft_disks.txt")
 
-        if self.site in SiteSOS.sites:
+        # Set SOS_SERVERS_DIR variable if not already set in the environment
+        if site in ClioSite.sites:
             os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
 
     @staticmethod
     def get_sos_services() -> List[str]:
         """Get list of SOS services from Unix env using subprocess"""
-        cmd = "/opt/cliosoft/latest/bin/sosadmin list"
+        sos_cmd = "/opt/cliosoft/latest/bin/sosadmin list"
         try:
-            p = subprocess.run(shlex.split(cmd), capture_output=True, check=True, text=True)
+            p = subprocess.run(shlex.split(sos_cmd), capture_output=True, check=True, text=True)
             if not p.stdout:
                 raise ValueError('-F- Operation failed...No SOS service found')
         except subprocess.CalledProcessError as e:
-            print("Subprocess failed", e.returncode, e.stderr)
+            logging.critical("Get SOS services failed: ", e.returncode, e.stderr)
             sys.exit(1)
 
         # return list of services
@@ -100,19 +99,36 @@ class SiteSOS:
     def get_sos_disks() -> Iterator[str]:
         """sosmgr command yields strings for primary and cache disks"""
 
-        services = SiteSOS.get_sos_services()
+        services = ClioSite.get_sos_services()
         # This command gives primary and cache paths of all services
         sos_cmd = "/opt/cliosoft/latest/bin/sosmgr service get -o csv -cpa -pp -pcl -s " + ','.join(services)
         try:
             p = subprocess.run(sos_cmd, capture_output=True, check=True, text=True, shell=True)
         except subprocess.CalledProcessError as e:
-            print("Subprocess.run failed", e.returncode, e.stderr)
+            logging.critical("Get SOS disks failed", e.returncode, e.stderr)
             sys.exit(1)
 
         # split string to lines and also filter empty lines
         for line in filter(None, p.stdout.split('\n')):
+            logging.debug(line.rstrip().split(','))
             yield line.rstrip().split(',')  # split() for a list
 
+
+    @staticmethod
+    def decorator_file_creation(func):
+        """Delete and re-create file"""
+        @wraps(func)
+        def wrapper(self, *args, **kwargs):
+            data_file = args[0]
+            if data_file.exists() and util.file_older_than(data_file, day=1):  # older than 1 day
+                try:
+                    logging.info('Data file is more than a day old...Re-create data file')
+                    os.remove(data_file)
+                except OSError:
+                    logging.error("Failed to remove data file")
+            if data_file.exists() is False:
+                func(self, *args, **kwargs)
+        return wrapper
 
     @decorator_file_creation
     def create_data_file(self, out_file) -> None:
@@ -120,10 +136,9 @@ class SiteSOS:
         seen = set()
         print('-I- Create data file')
         with open(out_file, 'w', newline='', encoding='utf-8') as file:
-            for line in SiteSOS.get_sos_disks():
+            for line in ClioSite.get_sos_disks():
                 if re.match(r'site', line[0]):
                     continue  # skip header row
-                # os.path gives string vs. pathlib.Path gives instance of a path
                 cache = Path(line[2]).parent
                 locality = line[3].lower()
                 repo = Path(line[4]).parent
@@ -131,8 +146,9 @@ class SiteSOS:
                 if locality == 'local' and repo not in seen:
                     seen.add(repo)          # use set to track disk names
                     file.write(str(repo) + '\n') # file.write works with string
+
                 if cache not in seen:
-                    seen.add(cache)         # use set to track disk names
+                    seen.add(cache)
                     file.write(str(cache) + '\n')
 
         # unix sed command to substitute string 'sitecode' to  string 'site' of the path
@@ -172,7 +188,7 @@ def perform_check(problem_disks: Tuple, add_space=False) -> List[str]:
         disk, size, _, avail = line
         messages.append(f"-W- {disk} Size={size}GB; Avail={avail}GB *** Low disk space")
 
-        if result := util.has_size_been_increased(disk, day=2):
+        if result := util.has_disk_size_been_increased(disk, day=2):
             messages.append(f"-W- {disk} size was increased recently...Need investigation")
         elif result is None:
             if add_space:
@@ -208,7 +224,7 @@ def main() -> None:
     new_data_file = bool(cli_args.new_data_file)
     add_size = bool(cli_args.add_size)
 
-    sos = SiteSOS('ddm')
+    sos = ClioSite('ddm')
     # sos = SiteSOS(SiteSOS.this_site)
     if new_data_file:
         os.remove(sos.data_file_path)
@@ -220,16 +236,16 @@ def main() -> None:
 
     if low_space:
         recipient = "linh.a.nguyen@intel.com"
-        messages = '\n'.join(perform_check(low_space, add_size))
+        messages = perform_check(low_space, add_size)
         # email user(s)
         subject = f"Cliosoft Alert: {sos.site} disk is low on space"
-        to_person = ';'.join(SiteSOS.ddm_contacts)
+        to_person = ';'.join(ClioSite.ddm_contacts)
         from_person = recipient
-        # email.send_email(subject, messages, to_person, from_person)
+        email.send_email(subject, messages, to_person, from_person)
         print(messages)
 
     # save disk usages to csv file
-    csv_file = Path(sos.data_path, f"{sos.site}_disk_usages.csv")
+    csv_file = Path(sos.app_data_path, f"{sos.site}_disk_usages.csv")
     write_to_csv_file(csv_file, all_disks)
 
 

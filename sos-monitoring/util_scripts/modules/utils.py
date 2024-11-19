@@ -1,14 +1,34 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-from typing import List
+import os
+import sys
 import subprocess
+import fcntl
 import re
 import time
 import shutil
 from pathlib import Path
-import os
+from typing import List
 
-_THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
+
+def lock_script(lock_file: str):
+    """
+    Locks a file pertaining to this script so that it cannot be run simultaneously.
+
+    Since the lock is automatically released when this script ends, there is no
+    need for an unlock function for this use case.
+
+    Returns:
+        lockfile if lock was acquired. Otherwise, print error and exists.
+    """
+    try:
+        # Try to acquire an exclusive lock on the file
+        lock_handle = os.open(lock_file, os.O_CREAT | os.O_RDWR, mode=0o644)
+        fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_handle
+    except IOError:
+        print("Another instance of the script is already running.")
+        sys.exit(1)
 
 
 def file_older_than(file_path: str | os.PathLike, day: int = 1):
@@ -19,7 +39,6 @@ def file_older_than(file_path: str | os.PathLike, day: int = 1):
     one_day_in_seconds = 24 * 60 * 60
 
     if time_difference > (one_day_in_seconds * day):
-        print(f"The file '{file_path}' is older than {day} day(s).")
         return True
     return False
 
@@ -30,15 +49,18 @@ def increase_disk_size(disk_name: str, adding: int=500) -> str:
     Your request is being processed
     successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
     """
+    _THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
+
     # <size> /(2**30) return  GB from Bytes; // division and returns the integer part of the result (rounding down)
     size = (shutil.disk_usage(disk_name)[0]) // (2**30)
+
     # nearest hundredth or tenth digit
     by_number = 100 if size >= 1000 else 10
     new_size = (size // by_number * by_number) + adding  # the // for only integer
 
     print(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
-    stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} " + \
-               f"--path {disk_name} --size {new_size}GB --immediate --exceed-forecast"
+    stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
+               f"--size {new_size}GB --immediate --exceed-forecast"
     print(stod_cmd)
 
     try:
@@ -46,12 +68,12 @@ def increase_disk_size(disk_name: str, adding: int=500) -> str:
         if result := re.search(r'successfully.*$', p.stdout, re.I):
             return f"-I- {result.group()}"
         else:
-            return f"-F- Disk resizing failed: {p.stderr}"
+            return f"-F- Failure to resize disk: {p.stderr}"
     except subprocess.CalledProcessError as er:
         return f"-F- Exception occurred: {er.stderr}"
 
 
-def has_size_been_increased(disk_info: str, day: int=2) -> bool|None:
+def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
     """read START history if disk size has been increased since the last 2 days
     1) Expected output (There may be a blank line in output depending on OS)
     Type,SubmitTime
@@ -62,8 +84,11 @@ def has_size_been_increased(disk_info: str, day: int=2) -> bool|None:
     Error: request timed out, please try with --timeout switch
     """
     d_name = Path(disk_info).name
-    cmd: str = '/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history ' + \
-        f"{day}d --number 1 \"description=~'{d_name}' && type=~'resize'\""
+    # cmd: str = '/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history ' + \
+    #     f"{day}d --number 1 \"description=~'{d_name}' && type=~'resize'\""
+
+    cmd: str = "/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history " \
+                f"{day}d --number 1 \"description=~'{d_name}' && type=~'resize'\""
     print(cmd)
 
     try:
