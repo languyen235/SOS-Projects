@@ -7,6 +7,7 @@ import fcntl
 import re
 import time
 import shutil
+import logging
 from pathlib import Path
 from typing import List
 
@@ -27,7 +28,7 @@ def lock_script(lock_file: str):
         fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return lock_handle
     except IOError:
-        print("Another instance of the script is already running.")
+        logging.warning("Another instance of the script is already running.")
         sys.exit(1)
 
 
@@ -58,10 +59,10 @@ def increase_disk_size(disk_name: str, adding: int=500) -> str:
     by_number = 100 if size >= 1000 else 10
     new_size = (size // by_number * by_number) + adding  # the // for only integer
 
-    print(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
+    logging.info(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
-    print(stod_cmd)
+    logging.info(stod_cmd)
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
@@ -89,20 +90,20 @@ def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
 
     cmd: str = "/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history " \
                 f"{day}d --number 1 \"description=~'{d_name}' && type=~'resize'\""
-    print(cmd)
+    logging.info(cmd)
 
     try:
         p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
-        print(p.stdout)
+        logging.debug(p.stdout)
         # match_true = re.search(r"stod\s+resize", p.stdout)
         # match_none = re.search(r"Type,SubmitTime", p.stdout)
         return re.search(r"stod\s+resize", p.stdout.strip())
     except subprocess.CalledProcessError as er:
-        print(f"-E- Exception occurred: {er.stderr}")
+        logging.error(f"Exception occurred: {er.stderr}")
         return False
 
 
-def disk_space_status(disk: str):
+def disk_usage(disk: str):
     """Available disk space. See shutil mode for more info
     (2**30) converts bytes to GB, // keeps only integer number
     Returns a list [total, used, available]
@@ -123,7 +124,30 @@ def exclude_services(exclu_file: str | os.PathLike, services: List) -> List[str]
             except ValueError:
                 print(f'-W-: {line} not in service list')
 
-    print('-I- Excluding service(s): ',
+    logging.info('Excluding service(s): ',
           [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
 
     return new_list
+
+
+
+def send_email(subject: str, body: List [str], to_email: str, from_email: str):
+    """ Send email to user"""
+    import smtplib
+    from email.message import EmailMessage
+    # with open(textfile) as fp:
+    #   # Create a text/plain message
+    #   msg = EmailMessage()
+    #   msg.set_content(fp.read())
+
+    msg = EmailMessage()
+    msg['Subject'] = subject
+    msg['From'] = from_email
+    msg['To'] = to_email
+    msg.set_content("\n".join(body))
+
+    # Send the message via our own SMTP server.
+    s = smtplib.SMTP('localhost')
+    s.send_message(msg)
+    s.quit()
+    print("Email sent...")
