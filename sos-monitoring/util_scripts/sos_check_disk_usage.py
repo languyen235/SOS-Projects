@@ -5,33 +5,12 @@ import sys
 import re
 import shlex
 import subprocess
-import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
-
 from functools import wraps
 from pathlib import Path
-from pprint import pprint as pp
 from typing import List, Iterator, Tuple, Final
-from modules import email_user as email
 
-# def lock_script(lockf_: str):
-#     """
-#     Locks a file pertaining to this script so that it cannot be run simultaneously.
-#
-#     Since the lock is automatically released when this script ends, there is no
-#     need for an unlock function for this use case.
-#
-#     Returns:
-#         lockfile if lock was acquired. Otherwise, print error and exists.
-#     """
-#     try:
-#         # Try to acquire an exclusive lock on the file
-#         lockfd_ = os.open(lockf_, os.O_CREAT | os.O_RDWR, mode=0o644)
-#         fcntl.lockf(lockfd_, fcntl.LOCK_EX | fcntl.LOCK_NB)
-#         return lockfd_
-#     except IOError:
-#         print("Another instance of the script is already running.")
-#         sys.exit(1)
+import logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s %(levelname)s %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
 
 from modules.utils import lock_script as lock_script
 lock_file = "/tmp/sos_checkdisk.lock"
@@ -46,33 +25,33 @@ class ClioSite:
     ddm_contacts = ['linh.a.nguyen@intel.com']
 
     # Directory for data and logs
-    app_data_path = Path('/opt/cliosoft/monitoring')
-    app_log_path = Path('/opt/cliosoft/monitoring/log')
-    if not app_log_path.exists():
-        app_log_path.mkdir(mode=0o775, parents=True, exist_ok=True)
+    data_path = Path('/opt/cliosoft/monitoring')
+    log_path = Path('/opt/cliosoft/monitoring/log')
 
+    if not log_path.exists():
+        log_path.mkdir(mode=0o775, parents=True, exist_ok=True)
 
     def __init__(self, site):
         self.site = site
-        self.app_data_path = ClioSite.app_data_path
-        self.data_file_path = Path(ClioSite.app_data_path, f"{site.upper()}_cliosoft_disks.txt")
+        self.data_file = Path(ClioSite.data_path, f"{site.upper()}_cliosoft_disks.txt")
 
-        # Set SOS_SERVERS_DIR variable if not already set in the environment
-        if site in ClioSite.sites:
-            os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
+
 
 
 def get_sos_services() -> List[str]:
     """Get list of SOS services from Unix env using subprocess"""
     sos_cmd = "/opt/cliosoft/latest/bin/sosadmin list"
+    timeout_s = 10 # 10 seconds
+
     try:
-        p = subprocess.run(shlex.split(sos_cmd), capture_output=True, check=True, text=True)
+        p = subprocess.run(shlex.split(sos_cmd), capture_output=True, check=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as e:
+        logging.critical("Get SOS services timed out: ", e.stderr)
     except subprocess.CalledProcessError as e:
         logging.critical("Get SOS services failed: ", e.returncode, e.stderr)
         sys.exit(1)
-
-    # return list of services
-    return p.stdout.rstrip().split()
+    else:
+        return p.stdout.rstrip().split()
 
 
 def get_sos_disks() -> Iterator[str]:
@@ -81,20 +60,23 @@ def get_sos_disks() -> Iterator[str]:
     services = get_sos_services()
     # This command gives primary and cache paths of all services
     sos_cmd = f"/opt/cliosoft/latest/bin/sosmgr service get -o csv -cpa -pp -pcl -s {','.join(services)}"
+    timeout_s = 40
     try:
-        p = subprocess.run(shlex.split(sos_cmd), capture_output=True, check=True, text=True)
+        p = subprocess.run(shlex.split(sos_cmd), capture_output=True, check=True, text=True, timeout=timeout_s)
+    except subprocess.TimeoutExpired as e:
+        logging.critical("Get SOS disks timed out", e.stderr)
     except subprocess.CalledProcessError as e:
         logging.critical("Get SOS disks failed", e.returncode, e.stderr)
         sys.exit(1)
+    else:
+        # split string to lines and also filter empty lines
+        for line in filter(None, p.stdout.split('\n')):
+            logging.debug(line.rstrip().split(','))
+            yield line.rstrip().split(',')  # split() for a list
 
-    # split string to lines and also filter empty lines
-    for line in filter(None, p.stdout.split('\n')):
-        logging.debug(line.rstrip().split(','))
-        yield line.rstrip().split(',')  # split() for a list
 
-
-def decorator_file_creation(func):
-    """Delete and re-create file"""
+def decorator_create_data_file(func: callable) -> callable:
+    """Delete and re-create file if older than 1 day"""
     from modules.utils import file_older_than
 
     @wraps(func)
@@ -111,11 +93,11 @@ def decorator_file_creation(func):
     return wrapper
 
 
-@decorator_file_creation
-def create_data_file(output_file) -> None:
+@decorator_create_data_file
+def create_data_file(output_file: Path) -> None:
     """Saves primary and cache paths to file"""
     seen_disks: set[Path] = set()
-    logging.info('Create data file')
+    logging.info('Creating data file')
     with open(output_file, 'w', newline='', encoding='utf-8') as file:
         for line in get_sos_disks():
             if re.match(r'site', line[0]):
@@ -136,15 +118,11 @@ def create_data_file(output_file) -> None:
     subprocess.run(f"sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' {str(output_file)}", check=True, shell=True)
 
 
-def disk_space_info(obj):
+def disk_space_info(obj: ClioSite)-> Tuple[Tuple[str], Tuple[str]]:
     """ Check disk space and return list of low space disks """
     from modules.utils import disk_usage
 
-    if obj.data_file_path.exists() and obj.data_file_path.stat().st_size == 0:
-        logging.error("Data file exists but empty")
-        raise RuntimeError("Zero size data file")
-
-    disks = Path(obj.data_file_path).read_text(encoding='utf-8').strip().splitlines()
+    disks = Path(obj.data_file).read_text(encoding='utf-8').strip().splitlines()
     disk_info_all = ()
     low_space_disks = ()
     LIMIT: Final[int] = 250  # threshold for low disk size
@@ -165,7 +143,7 @@ def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
             csv_writer.writerow(row)
 
 
-def perform_check(problem_disks: Tuple, add_space=False) -> List[str]:
+def perform_check(problem_disks: Tuple, increasing_space=False) -> List[str]:
     """
     Iterate over a tuple of disks for disk name, size and space.
     Generate messages for low disk space and recent disk size increases.
@@ -180,7 +158,7 @@ def perform_check(problem_disks: Tuple, add_space=False) -> List[str]:
         if result := has_disk_size_been_increased(disk, day=2):
             messages.append(f"-W- {disk} size was increased recently...Need investigation")
         elif result is None:
-            if add_space:
+            if increasing_space:
                 messages.append(increase_disk_size(disk, adding=10))
         else:
             messages.append('-E- Disk check failed')
@@ -221,26 +199,30 @@ def main() -> None:
     # os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
     cli_args = validate_cmd_line()
-    new_data_file = bool(cli_args.new_data_file)
-    add_size = bool(cli_args.add_size)
+    is_new_data_file = bool(cli_args.new_data_file)
+    is_adding_space = bool(cli_args.add_size)
 
-    sos = ClioSite('ddm')
-    # sos = SiteSOS(SiteSOS.this_site)
-    if new_data_file:
-        os.remove(sos.data_file_path)
+    # sos = ClioSite('ddm')
+    sos = ClioSite(ClioSite.this_site)
 
-    create_data_file(sos.data_file_path)
+    if sos.site in ClioSite.sites:
+        os.environ['SOS_SERVERS_DIR'] = '/nfs/site/disks/sos_adm/share/SERVERS7'
+
+    if is_new_data_file or (sos.data_file.exists() and sos.data_file.stat().st_size == 0):
+        os.remove(sos.data_file)
+
+    create_data_file(sos.data_file)
 
     # check disk space
     list_disks, problem_disks = disk_space_info(sos)
 
     if problem_disks:
         logging.debug(problem_disks)
-        messages = perform_check(problem_disks, add_size)
+        messages = perform_check(problem_disks, is_adding_space)
         email_user(messages, sos)
 
     # save disk usages to csv file
-    csv_file = Path(sos.app_data_path, f"{sos.site.upper()}_disk_usages.csv")
+    csv_file = Path(ClioSite.data_path, f"{sos.site.upper()}_disk_usages.csv")
     write_to_csv_file(csv_file, list_disks)
 
 
