@@ -9,8 +9,9 @@ import time
 import shutil
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
+logger = logging.getLogger(__name__)
 
 def lock_script(lock_file: str):
     """
@@ -28,7 +29,7 @@ def lock_script(lock_file: str):
         fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         return lock_handle
     except IOError:
-        logging.warning("Another instance of the script is already running.")
+        logger.warning("Another instance of the script is already running.")
         sys.exit(1)
 
 
@@ -62,7 +63,7 @@ def increase_disk_size(disk_name: str, adding: int=500) -> str:
     logging.info(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
-    logging.info(stod_cmd)
+    logger.info("%s",stod_cmd)
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
@@ -90,16 +91,16 @@ def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
 
     cmd: str = "/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history " \
                 f"{day}d --number 1 \"description=~'{d_name}' && type=~'resize'\""
-    logging.info(cmd)
+    logger.info("%s",cmd)
 
     try:
         p = subprocess.run(cmd, capture_output=True, check=True, shell=True, text=True)
-        logging.debug(p.stdout)
+        logger.debug("%s",p.stdout)
         # match_true = re.search(r"stod\s+resize", p.stdout)
         # match_none = re.search(r"Type,SubmitTime", p.stdout)
         return re.search(r"stod\s+resize", p.stdout.strip())
     except subprocess.CalledProcessError as er:
-        logging.error(f"Exception occurred: {er.stderr}")
+        logger.error("Exception occurred: %s", er.stderr)
         return False
 
 
@@ -122,7 +123,7 @@ def exclude_services(exclu_file: str | os.PathLike, services: List) -> List[str]
             try:
                 new_list.remove(line)  # remove service from the list
             except ValueError:
-                print(f'-W-: {line} not in service list')
+                logger.warning(f'-W-: {line} not in service list')
 
     logging.info('Excluding service(s): ',
           [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
@@ -130,9 +131,8 @@ def exclude_services(exclu_file: str | os.PathLike, services: List) -> List[str]
     return new_list
 
 
-
-def send_email(subject: str, body: List [str], to_email: str, from_email: str):
-    """ Send email to user"""
+def send_email(subject: str, body: str | List [str], to_email: str | List [str], from_email: str):
+    """ Send email to users"""
     import smtplib
     from email.message import EmailMessage
     # with open(textfile) as fp:
@@ -142,12 +142,40 @@ def send_email(subject: str, body: List [str], to_email: str, from_email: str):
 
     msg = EmailMessage()
     msg['Subject'] = subject
+    # msg['From'] = from_email
     msg['From'] = from_email
-    msg['To'] = to_email
+    msg['To'] = ';'.join(to_email) if len(to_email) > 1 else to_email[0]
     msg.set_content("\n".join(body))
-
     # Send the message via our own SMTP server.
+
     s = smtplib.SMTP('localhost')
     s.send_message(msg)
     s.quit()
-    print("Email sent...")
+    logger.info("Email sent...")
+
+
+def sosgmr_status(url)-> Tuple[str, int | str]:
+    import urllib.request
+    import urllib.error
+    import socket
+
+    try:
+        response = urllib.request.urlopen(url, timeout=10)
+        logger.debug("The sosmgr check returned code: %s", response.getcode())
+        # html = response.read().decode('utf-8')
+        # print(html)
+    except urllib.error.HTTPError as e:
+        logger.error('HTTP Error: %s', e.code)
+        if e.code == 404:
+            logger.error('Page not found.')
+        elif e.code == 500:
+            logger.error('Internal server error.')
+        return 'Failure', e.code
+    except urllib.error.URLError as e:
+        logger.error('URL Error: %s', e.reason)
+        return 'Failure', e.reason
+    except socket.timeout:
+        logger.error("SOS web access timed out")
+        return 'Failure', "sosmgr web timed out"
+    else:
+        return 'Success', response.getcode()
