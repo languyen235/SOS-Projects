@@ -3,7 +3,6 @@
 import os
 import sys
 import subprocess
-import fcntl
 import re
 import time
 import shutil
@@ -23,6 +22,7 @@ def lock_script(lock_file: str):
     Returns:
         lockfile if lock was acquired. Otherwise, print error and exists.
     """
+    import fcntl
     try:
         # Try to acquire an exclusive lock on the file
         lock_handle = os.open(lock_file, os.O_CREAT | os.O_RDWR, mode=0o644)
@@ -45,8 +45,8 @@ def file_older_than(file_path: str | os.PathLike, day: int = 1):
     return False
 
 
-def increase_disk_size(disk_name: str, adding: int=500) -> str:
-    """Increase disk size (500GB) using START command
+def increase_disk_size(disk_name: str, adding: int) -> str:
+    """Increase disk size using START command
     1. Expected output for success:
     Your request is being processed
     successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
@@ -58,9 +58,9 @@ def increase_disk_size(disk_name: str, adding: int=500) -> str:
 
     # nearest hundredth or tenth digit
     by_number = 100 if size >= 1000 else 10
-    new_size = (size // by_number * by_number) + adding  # the // for only integer
+    new_size = (size // by_number * by_number) + adding  # the // returns only integer
 
-    logging.info(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
+    logger.info(f"-I- New disk size:  Size({size}Gb) + adding({adding}Gb) = {new_size}Gb")
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
     logger.info("%s",stod_cmd)
@@ -104,7 +104,7 @@ def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
         return False
 
 
-def disk_usage(disk: str):
+def report_disk_size(disk: str):
     """Available disk space. See shutil mode for more info
     (2**30) converts bytes to GB, // keeps only integer number
     Returns a list [total, used, available]
@@ -123,15 +123,15 @@ def exclude_services(exclu_file: str | os.PathLike, services: List) -> List[str]
             try:
                 new_list.remove(line)  # remove service from the list
             except ValueError:
-                logger.warning(f'-W-: {line} not in service list')
+                logger.warning("%s is not in service list, skipping...", line)
 
-    logging.info('Excluding service(s): ',
+    logger.info('Excluding service(s): ',
           [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
 
     return new_list
 
 
-def send_email(subject: str, body: str | List [str], to_email: str | List [str], from_email: str):
+def send_email(subject: str, body: str | List [str], receiver: str | List [str], sender: str):
     """ Send email to users"""
     import smtplib
     from email.message import EmailMessage
@@ -142,9 +142,8 @@ def send_email(subject: str, body: str | List [str], to_email: str | List [str],
 
     msg = EmailMessage()
     msg['Subject'] = subject
-    # msg['From'] = from_email
-    msg['From'] = from_email
-    msg['To'] = ';'.join(to_email) if len(to_email) > 1 else to_email[0]
+    msg['From'] = sender
+    msg['To'] = ';'.join(receiver) if len(receiver) > 1 else receiver[0]
     msg.set_content("\n".join(body))
     # Send the message via our own SMTP server.
 
@@ -176,6 +175,6 @@ def sosgmr_status(url)-> Tuple[str, int | str]:
         return 'Failure', e.reason
     except socket.timeout:
         logger.error("SOS web access timed out")
-        return 'Failure', "sosmgr web timed out"
+        return 'Failure', "sosmgr timed out"
     else:
         return 'Success', response.getcode()
