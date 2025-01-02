@@ -53,33 +53,32 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     """
     _THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
 
-    # <size> / (2**30) converts bytes to Gb and keep only integer, discard the decimal part
+    # <size> // (2**30) converts bytes to Gb and keep only integer, discard the decimal part
     size = (shutil.disk_usage(disk_name)[0]) // (2**30)
 
     # by_number = 100 if size >= 1000 else 10
     # new_size = (size // by_number * by_number) + adding_size  # the // returns only integer
-    #
     #  rounding down to the nearest 1000 or 100
     # decimal_factor = -3 if size >= 1000 else -2
+
     if size >= 1000:
-        decimal_factor = -3
+        factoring_value = 100
     elif size >= 100:
-        decimal_factor = -2
+        factoring_value = 10
     else:
-        logger.debug('Original disk size is less than 100GB')
+        logger.error('%s size is less than 100GB...Auto-resizing is not supported', disk_name)
         return False
 
-    #  rounding down size to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
-    rounded_down_value = round(size, decimal_factor)
+    # rounding down size to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
+    rounded_down_value = (size // factoring_value) * factoring_value
     new_size = rounded_down_value + adding_size
-    logger.debug(f"New disk size:  Size({size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
-
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
         if result := re.search(r'(successfully).*$', p.stdout, re.I):
+            logger.info(f"New disk size:  Size({size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
             logger.info("%s", result.group())
             return True
     except subprocess.CalledProcessError as er:
@@ -88,7 +87,7 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
         return False
 
 
-def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
+def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
     """read START history if disk size has been increased since the last 2 days
     1) Expected output (There may be a blank line in output depending on OS)
     Type,SubmitTime
@@ -111,7 +110,7 @@ def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
             logger.info("%s", search_result.group())
             return True
         elif search_result is None:
-            logger.info("Disk %s was not increased in the last %s days", disk_name, day)
+            logger.info("Disk %s not been increased in the last %s days", disk_name.split('/')[-1], day)
             return None
     except subprocess.CalledProcessError as er:
         logger.debug("START command: %s",stod_request_cmd)
@@ -120,7 +119,7 @@ def has_disk_size_been_increased(disk_info: str, day: int=2) -> bool | None:
 
 
 def report_disk_size(disk: str):
-    """Available disk space. See shutil mode for more info
+    """Available disk space. See shutil module for more info
     (2**30) converts bytes to GB, // keeps only integer number
     Returns a list [total, used, available]
     """
@@ -151,10 +150,6 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
     """ Send email to users"""
     import smtplib
     from email.message import EmailMessage
-    # with open(textfile) as fp:
-    #   # Create a text/plain message
-    #   msg = EmailMessage()
-    #   msg.set_content(fp.read())
 
     msg = EmailMessage()
     msg['Subject'] = subject
@@ -162,7 +157,6 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
     msg['To'] = ';'.join(receiver) if len(receiver) > 1 else receiver[0]
     msg.set_content("\n".join(body))
     # Send the message via our own SMTP server.
-
     s = smtplib.SMTP('localhost')
     s.send_message(msg)
     s.quit()
@@ -170,12 +164,12 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
 
 
 def sosgmr_status(url)-> Tuple[str, int | str]:
+    """Check sosmgr status. Credited to Intel IGPT"""
     import urllib.request
     import urllib.error
-    import socket
 
     try:
-        response = urllib.request.urlopen(url, timeout=10)
+        response = urllib.request.urlopen(url, timeout=5)
         logger.debug("The sosmgr check returned code: %s", response.getcode())
         # html = response.read().decode('utf-8')
         # print(html)
@@ -186,12 +180,10 @@ def sosgmr_status(url)-> Tuple[str, int | str]:
         elif e.code == 500:
             logger.error('Internal server error.')
         return 'Failure', e.code
+    except TimeoutError:
+        return 'Failure', "HTTP request timed out"
     except urllib.error.URLError as e:
-        logger.error('URL Error: %s', e.reason)
         return 'Failure', e.reason
-    except socket.timeout:
-        logger.error("SOS web access timed out")
-        return 'Failure', "sosmgr timed out"
     else:
         return 'Success', response.getcode()
 
@@ -201,20 +193,19 @@ def parse_error_messages(log_file: str | os.PathLike)-> List[str]:
     messages = []
     with open(log_file, 'r', encoding='utf-8') as file:
         for line in file:
-            # if re.search(r'ERROR|WARNING|FATAL|CRITICAL|EXCEPTION', line):
-            if re.search(r'todo_when_low_disk_space|has_disk_size_been_increased|increase_disk_size', line):
+            if re.search(r'ERROR|WARNING|CRITICAL|EXCEPTION|^([^[].*\n)+', line):
                 messages.append(line)
     return messages
 
 
 def verify_file_link(file_link, expected_directory):
-    # Check if the file link exists
+    # Check if the file link exists, credited to Intel IGPT
     if not os.path.exists(file_link):
         logger.error(f"The file link '{file_link}' does not exist.")
         return False
 
     # Get the absolute path of the file link
-    file_link_abs_path = os.path.abspath(file_link)
+    # file_link_abs_path = os.path.abspath(file_link)
 
     # Get the absolute path of the expected directory
     expected_directory_abs_path = os.path.abspath(expected_directory)
@@ -231,7 +222,7 @@ def verify_file_link(file_link, expected_directory):
                         f"is correctly linking to the expected directory '{expected_directory}'.")
             return True
         else:
-            logger.error(f"The file link '{file_link}' "
+            logger.debug(f"The file link '{file_link}' "
                          f"is not linking to the expected directory '{expected_directory}'.")
             return False
     else:
