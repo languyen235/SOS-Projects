@@ -51,15 +51,12 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     Your request is being processed
     successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
     """
-    _THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
+    # _THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
+    # _THIS_SITE: str = os.environ.get('EC_ZONE', '')
+    _THIS_SITE: str = subprocess.check_output("echo $EC_ZONE", shell=True, text=True).rstrip('\n')
 
     # <size> // (2**30) converts bytes to Gb and keep only integer, discard the decimal part
     size = (shutil.disk_usage(disk_name)[0]) // (2**30)
-
-    # by_number = 100 if size >= 1000 else 10
-    # new_size = (size // by_number * by_number) + adding_size  # the // returns only integer
-    #  rounding down to the nearest 1000 or 100
-    # decimal_factor = -3 if size >= 1000 else -2
 
     if size >= 1000:
         factoring_value = 100
@@ -69,7 +66,7 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
         logger.error('%s size is less than 100GB...Auto-resizing is not supported', disk_name)
         return False
 
-    # rounding down size to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
+    # rounding down to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
     rounded_down_value = (size // factoring_value) * factoring_value
     new_size = rounded_down_value + adding_size
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
