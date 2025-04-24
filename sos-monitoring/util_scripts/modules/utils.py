@@ -1,11 +1,11 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-import os
-import sys
+from UsrIntel.R1 import os, sys
 import subprocess
 import re
 import time
 import shutil
+import socket
 import logging
 from pathlib import Path
 from typing import List, Tuple
@@ -32,7 +32,6 @@ def lock_script(lock_file: str):
         logger.warning("Another instance of the script is already running.")
         sys.exit(1)
 
-
 def file_older_than(file_path: str | os.PathLike, day: int = 1):
     """Return status if file is older than number of days"""
     # time_difference = current_time - last_modified_time_on_file
@@ -51,9 +50,8 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     Your request is being processed
     successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
     """
-    # _THIS_SITE: str = subprocess.getoutput('echo $EC_ZONE')
-    # _THIS_SITE: str = os.environ.get('EC_ZONE', '')
-    _THIS_SITE: str = subprocess.check_output("echo $EC_ZONE", shell=True, text=True).rstrip('\n')
+    # get site code
+    _this_site = socket.getfqdn().split('.')[1]
 
     # <size> // (2**30) converts bytes to Gb and keep only integer, discard the decimal part
     size = (shutil.disk_usage(disk_name)[0]) // (2**30)
@@ -63,19 +61,22 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     elif size >= 100:
         factoring_value = 10
     else:
-        logger.error('%s size is less than 100GB...Auto-resizing is not supported', disk_name)
+        logger.error('%s original size is less than 100GB...Auto-resizing is not supported', disk_name)
         return False
 
     # rounding down to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
     rounded_down_value = (size // factoring_value) * factoring_value
     new_size = rounded_down_value + adding_size
-    stod_cmd = f"/usr/intel/bin/stod resize --cell {_THIS_SITE} --path {disk_name} " \
+    stod_cmd = f"/usr/intel/bin/stod resize --cell {_this_site} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
+
+    logger.debug("START command: %s",stod_cmd)
+    logger.info(f"New disk size:  Size({size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
         if result := re.search(r'(successfully).*$', p.stdout, re.I):
-            logger.info(f"New disk size:  Size({size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
+            logger.warning("Disk size has been increased to %sGb", new_size)
             logger.info("%s", result.group())
             return True
     except subprocess.CalledProcessError as er:
@@ -102,7 +103,7 @@ def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
         p = subprocess.run(stod_request_cmd, capture_output=True, check=True, shell=True, text=True)
         # match_true = re.search(r"stod\s+resize", p.stdout)
         # match_none = re.search(r"Type,SubmitTime", p.stdout)
-        # search for "stod resize" in the output
+        # search for "stod resize" keyword in the output
         if search_result := re.search(r"stod\s+resize,\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}", p.stdout):
             logger.info("%s", search_result.group())
             return True
@@ -123,24 +124,17 @@ def report_disk_size(disk: str):
     return [x // (2**30) for x in shutil.disk_usage(disk)]
 
 
-def exclude_services(exclu_file: str | os.PathLike, services: List) -> List[str]:
+def get_excluded_services(exclu_file: str | os.PathLike) -> List[str]:
     """Remove service(s) from service list"""
-    new_list = services
-    with open(exclu_file, 'r', encoding='utf-8') as file:
-        lines = file.read()
+    excluded_services = [line.strip() for line in open(exclu_file, 'r', encoding='utf-8')
+                         if line.strip() and not line.startswith('#')]
 
-    for line in filter(None, lines.split('\n')):  # filter empty and split line
-        if not line.startswith('#'):
-            try:
-                logger.debug("Excluding service: %s", line)
-                new_list.remove(line)  # remove service from the list
-            except ValueError:
-                logger.warning("%s is not in service list, skipping...", line)
-
-    logger.debug('Excluding service(s): ',
-          [x for x in filter(None, lines.split('\n')) if not x.startswith('#')])
-
-    return new_list
+    # updated_services = [service for service in services if service not in excluded_services]
+    if excluded_services:
+        logger.debug("Excluding services: %s", excluded_services)
+        return excluded_services
+    else:
+        return []
 
 
 def send_email(subject: str, body: str | List [str], receiver: str | List [str], sender: str):
@@ -160,29 +154,22 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
     logger.info("Email sent...")
 
 
-def sosgmr_status(url)-> Tuple[str, int | str]:
+def sosmgr_status(url)-> Tuple[str, int | str]:
     """Check sosmgr status. Credited to Intel IGPT"""
-    import urllib.request
-    import urllib.error
-
+    import requests # type: ignore
+    timeout = 5
     try:
-        response = urllib.request.urlopen(url, timeout=5)
-        logger.debug("The sosmgr check returned code: %s", response.getcode())
-        # html = response.read().decode('utf-8')
-        # print(html)
-    except urllib.error.HTTPError as e:
-        logger.error('HTTP Error: %s', e.code)
-        if e.code == 404:
-            logger.error('Page not found.')
-        elif e.code == 500:
-            logger.error('Internal server error.')
-        return 'Failure', e.code
-    except TimeoutError:
+        response = requests.get(url, timeout=timeout)
+        logger.debug("The sosmgr check returned code: %s", response.status_code)
+        return 'Success', response.status_code
+    except requests.exceptions.Timeout:
+        # Handle timeout exception
+        logger.error("The request to %s timed out after %s seconds.", url, timeout)
         return 'Failure', "HTTP request timed out"
-    except urllib.error.URLError as e:
-        return 'Failure', e.reason
-    else:
-        return 'Success', response.getcode()
+    except requests.exceptions.RequestException as e:
+        # Handle any other exceptions that occur during the request
+        logger.error("An error occurred: %s", e)
+        return 'Failure', e
 
 
 def parse_error_messages(log_file: str | os.PathLike)-> List[str]:
@@ -225,3 +212,14 @@ def verify_file_link(file_link, expected_directory):
     else:
         logger.error(f"The file link '{file_link}' is not a symbolic link.")
         return False
+
+
+def rotate_file(filename: str | os.PathLike)-> None:
+    """Rotate file, keep last 5 files"""
+    max_backup_count = 5
+    if os.path.exists(filename):
+        for i in reversed(range(1, max_backup_count)):
+            rotated_filename = f"{filename}.{i}"
+            if os.path.isfile(rotated_filename):
+                os.rename(rotated_filename, f"{filename}.{i + 1}")
+    shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
