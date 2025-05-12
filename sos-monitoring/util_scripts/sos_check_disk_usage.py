@@ -12,13 +12,13 @@ from pathlib import Path
 from typing import List, Iterator, Tuple, Final, TextIO, Dict
 sys.path.append('/opt/cliosoft/monitoring')  # Add the parent directory to modules
 from modules.utils import (send_email, sosmgr_status,
-                           lock_script, report_disk_size, parse_error_messages, rotate_file,
+                           lock_script, report_disk_size, read_log_error_messages, rotate_file,
                            get_excluded_services)
 
 
 # Global variables
-LOW_SPACE_THRESHOLD: int = 250  # 250GB, threshold for low disk size
-ADDING_DISK_SIZE: int = 500  # 500GB, value to be add to current disk size
+LOW_SPACE_THRESHOLD: int = 250  # threshold for low disk size
+ADDING_DISK_SIZE: int = 500  # value to be add to current disk size
 SERVER_CONFIG_LINK = '/opt/cliosoft/latest/SERVERS'
 SERVER_CONFIG_PATH = '/nfs/site/disks/sos_adm/share/SERVERS7'
 SOS_ADMIN_CMD = "/opt/cliosoft/latest/bin/sosadmin"
@@ -60,7 +60,7 @@ class ClioService:
             self.save_env_data()
 
     @staticmethod
-    def logging_decorator(func)-> callable:
+    def logging_debug_decorator(func)-> callable:
         """ Decorator to log debug information after function is executed"""
         @wraps(func)
         def logit(self, *args, **kwargs):
@@ -79,18 +79,20 @@ class ClioService:
                 logger.debug(f"{name}: {value}")
         return logit
 
-    @logging_decorator
+    @logging_debug_decorator
     def load_from_env_data_file(self):
         # Load environment variables from file
         data = self.read_from_env_data_file(self.env_data_file)
         self.update_site_variables(data)
         self.update_env_variables(data)
 
+
     def update_site_variables(self, data):
         """update instance variables"""
         self.site_name = data['site_name']
         self.web_url = data['site_url']
         self.server_role = data['server_role']
+
 
     @staticmethod
     def update_env_variables(data):
@@ -102,7 +104,8 @@ class ClioService:
             'EC_ZONE': data['ec_zone'],
             })
 
-    @logging_decorator
+
+    @logging_debug_decorator
     def initialize_env_variables(self):
         """Initialize SOS environment variables"""
         os.environ['CLIOSOFT_DIR'] = '/opt/cliosoft/latest'
@@ -161,7 +164,7 @@ class ClioService:
                 logger.error(f"Failed to match server config path for {site} site: {real_path}")
                 raise ValueError(f'Invalid server config path: {real_path}')
         else:
-            logger.debug(f"Assuming test server for unknown site: {site}")
+            logger.debug(f"Assuming test site: {site}")
             return real_path
 
 
@@ -199,7 +202,6 @@ def get_sos_services() -> List[str]:
 
     if services is None:
         logger.error("No SOS services found")
-        # sendmail_before_raising_exception()
         raise ValueError('No SOS services found')
 
     if EXCLUDED_SERVICES_FILE.exists():
@@ -228,13 +230,11 @@ def get_sos_disks() -> Iterator[str]:
 
     if sos_cmd is None:
         logger.error("Unknown server role: %s", server_role)
-        # sendmail_before_raising_exception()
         raise ValueError(f'Unknown server role:  {server_role}')
 
     lines = run_sos_cmd_in_subproc(sos_cmd, timeout=TIMEOUT)
     if lines is None:
         logger.error("No SOS disks found")
-        # sendmail_before_raising_exception()
         raise ValueError('No SOS disks found')
     else:
         for line in lines:
@@ -243,7 +243,7 @@ def get_sos_disks() -> Iterator[str]:
             yield line
 
 
-def decorator_create_data_file(func: callable) -> callable:
+def create_data_file_decorator(func: callable) -> callable:
     """Delete and re-create file if file is older than a day"""
     from modules.utils import file_older_than
     @wraps(func)
@@ -255,7 +255,6 @@ def decorator_create_data_file(func: callable) -> callable:
                 os.remove(data_file)
             except OSError as err:
                 logger.error("Failed to remove data file: %s", err)
-                # sendmail_before_raising_exception()
                 raise
         if data_file.exists() is False:
             func(*args, **kwargs)
@@ -270,7 +269,7 @@ def get_parent_dir(disk_path: Path) -> Path:
     return path.parents[level]
 
 
-@decorator_create_data_file
+@create_data_file_decorator
 def create_data_file(data_file: Path) -> None:
     """Creates data file of Cliosoft primary and cache disk paths"""
     found_disks: set[Path] = set()
@@ -297,7 +296,6 @@ def create_data_file(data_file: Path) -> None:
                     write_disk_path(cache_dir, found_disks, file)
     except OSError as err:
         logger.error("Failed to create data file: %s", err)
-        # sendmail_before_raising_exception()
         raise
 
     # unix sed command to substitute text in file
@@ -328,7 +326,7 @@ def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
             csv_writer.writerow(row)
 
 
-def handle_low_disk_space(disks_with_low_space: Tuple, additional_size: int) -> None:
+def handle_low_disk_space(disks_with_low_space: Tuple, adding_size: int) -> None:
     """
     Iterate over a tuple of disks for disk name, size and space.
     Generate messages for low disk space and recent disk size increases.
@@ -336,20 +334,18 @@ def handle_low_disk_space(disks_with_low_space: Tuple, additional_size: int) -> 
     """
     from modules.utils import has_disk_size_been_increased, increase_disk_size
     DISK_SIZE_INCREASE_DAYS: Final[int] = 2
+
     for line in disks_with_low_space:
         disk, size, _, avail = line
         warning_low_space = f"{disk} Size: {size}GB; Avail: {avail}GB *** Low disk space"
         logger.warning("%s", warning_low_space)
 
-        recent_increase_check = has_disk_size_been_increased(disk, day=DISK_SIZE_INCREASE_DAYS)
-        if recent_increase_check:
-            logger.warning("%s's size was increased recently...Investigation needed", disk.split('/')[-1])
-        elif recent_increase_check is None:
-            if additional_size > 0:
-                logger.info("Attempt to add %sGB to %s", additional_size, disk.split('/')[-1])
-                increase_disk_size(disk, additional_size)
-        else:
-            logger.error('Disk check failed: %s', recent_increase_check)
+        if has_disk_size_been_increased(disk, day=DISK_SIZE_INCREASE_DAYS):
+            logger.warning("START found %s size has been recently increased... Need investigation",
+                           disk.split('/')[-1])
+        elif adding_size > 0:
+            logger.info("Attempt to add %sGB to %s", adding_size, disk.split('/')[-1])
+            increase_disk_size(disk, adding_size)
 
 
 def check_web_status(web_url: str) -> None:
@@ -363,20 +359,16 @@ def check_web_status(web_url: str) -> None:
 
 
 def send_email_status(log_file: str | os.PathLike)-> None:
-    """Send email if there are errors in log file before exiting"""
-    site = this_site_code().upper()
-    if messages := parse_error_messages(log_file):
-        subject = f"Cliosoft Alert: {site} disk monitoring failed with errors"
+    """Send email if there are errors in log file"""
+    _site = this_site_code().upper()
+    if messages := read_log_error_messages(log_file):
+        logger.error("%s disk space monitoring failed", _site)
+        subject = f"Cliosoft Alert: {_site} disk monitoring check failed with errors"
         send_email(subject, messages, DDM_CONTACTS, SENDER)
         rotate_file(log_file)
     else:
-        logger.info("%s disk space monitoring passed", site)
+        logger.info("%s disk space monitoring passed", _site)
         logger.info('Script finished')
-
-
-def sendmail_before_raising_exception():
-    """Send email if there are errors in log file before raising exception"""
-    return send_email_status(ClioService.log_file)
 
 
 def process_cmd_line():
@@ -404,6 +396,7 @@ def process_cmd_line():
     parser.add_argument("-rdf", "--refresh_disk_file", action="store_true", help='Refresh data file now')
     parser.add_argument("-eas", "--enable_add_size", action="store_true", help='Enable increasing disk size')
     parser.add_argument("-tst", "--test", action="store_true", help='Indicate running on test server')
+    logger.debug('Command line arguments: %s', parser.parse_args())
     return parser.parse_args()
 
 
@@ -436,49 +429,27 @@ def refresh_disk_file(sos)-> None:
 def main() -> None:
     """Main function"""
     cli_args = process_cmd_line()
-    logger.debug('Command line arguments: %s', cli_args)
-    # refresh_data_file_now = cli_args.refresh_disk_file
-    # enable_adding_space = cli_args.enable_add_size
-    # is_test_server = cli_args.test
-
-    # if cli_args.test:
-    #     logger.debug('Running script on DDM test server')
-    #     sos = ClioService('ddm')
-    # else:
-    #     logger.debug('Running script on production server')
-    #     sos = ClioService(this_site_code())
     sos = initialize_service(cli_args)
 
     # we want to refresh data file now or file does not exist
     if should_refresh_disk_file(cli_args, sos) or not sos.data_file.exists():
         refresh_disk_file(sos)
 
-    # # we want to refresh data file now or file is empty
-    # if cli_args.refresh_disk_file or (sos.data_file.exists() and sos.data_file.stat().st_size == 0):
-    #     os.remove(sos.data_file) if os.path.exists(sos.data_file) else None
-    #
-    # if not sos.data_file.exists():
-    #     create_data_file(sos.data_file)
-
-    # check sosmgr FE web service
-    check_web_status(sos.web_url)
+    # check sosmgr web service response
+    # check_web_status(sos.web_url)
 
     # check disk space and optionally increase disk size
     list_all_disks, list_low_space_disks = disk_space_info(sos.data_file)
     handle_disk_space(list_low_space_disks, cli_args)
 
-    # # check disk space and optionally increase disk size
-    # list_all_disks, list_low_space_disks = disk_space_info(sos.data_file)
-    # if list_low_space_disks:
-    #     disk_size_value = ADDING_DISK_SIZE if cli_args.enable_add_size else 0
-    #     handle_low_disk_space(list_low_space_disks, disk_size_value)
-    # else:
-    #     logger.debug("All disks have enough space")
-
     # save disk usages to csv file
     csv_file = Path(sos.data_path, f"{sos.site.upper()}_disk_usages.csv")
     write_to_csv_file(csv_file, list_all_disks)
 
+    # check sosmgr web service response
+    check_web_status(sos.web_url)
+
+    # send email if there are errors
     send_email_status(sos.log_file)
 
 if __name__ == '__main__':

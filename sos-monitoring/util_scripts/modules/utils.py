@@ -54,30 +54,30 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     _this_site = socket.getfqdn().split('.')[1]
 
     # <size> // (2**30) converts bytes to Gb and keep only integer, discard the decimal part
-    size = (shutil.disk_usage(disk_name)[0]) // (2**30)
+    disk_size = (shutil.disk_usage(disk_name)[0]) // (2**30)
 
-    if size >= 1000:
+    if disk_size >= 1000:
         factoring_value = 100
-    elif size >= 100:
+    elif disk_size >= 100:
         factoring_value = 10
     else:
         logger.error('%s original size is less than 100GB...Auto-resizing is not supported', disk_name)
         return False
 
     # rounding down to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
-    rounded_down_value = (size // factoring_value) * factoring_value
+    rounded_down_value = (disk_size // factoring_value) * factoring_value
     new_size = rounded_down_value + adding_size
     stod_cmd = f"/usr/intel/bin/stod resize --cell {_this_site} --path {disk_name} " \
                f"--size {new_size}GB --immediate --exceed-forecast"
 
     logger.debug("START command: %s",stod_cmd)
-    logger.info(f"New disk size:  Size({size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
+    logger.info(f"New disk size:  Size({disk_size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
         if result := re.search(r'(successfully).*$', p.stdout, re.I):
-            logger.warning("Disk size has been increased to %sGb", new_size)
-            logger.info("%s", result.group())
+            logger.info("Disk size has been increased to %sGb", new_size)
+            logger.debug("%s", result.group())
             return True
     except subprocess.CalledProcessError as er:
         logger.debug("START command: %s",stod_cmd)
@@ -101,19 +101,17 @@ def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
 
     try:
         p = subprocess.run(stod_request_cmd, capture_output=True, check=True, shell=True, text=True)
-        # match_true = re.search(r"stod\s+resize", p.stdout)
-        # match_none = re.search(r"Type,SubmitTime", p.stdout)
-        # search for "stod resize" keyword in the output
-        if search_result := re.search(r"stod\s+resize,\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}", p.stdout):
+        search_result = re.search(r"stod\s+resize,\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}", p.stdout)
+        if search_result:
             logger.info("%s", search_result.group())
             return True
-        elif search_result is None:
-            logger.info("Disk %s not been increased in the last %s days", disk_name.split('/')[-1], day)
-            return None
+        logger.info("Disk %s has not been increased in the last %s days", disk_name.split('/')[-1], day)
+        return None
     except subprocess.CalledProcessError as er:
         logger.debug("START command: %s",stod_request_cmd)
         logger.error("START command failed with error: %s",er.stderr)
-        return False
+        return None
+
 
 
 def report_disk_size(disk: str):
@@ -125,11 +123,10 @@ def report_disk_size(disk: str):
 
 
 def get_excluded_services(exclu_file: str | os.PathLike) -> List[str]:
-    """Remove service(s) from service list"""
+    """Read file for excluded services and remove them from service list"""
     excluded_services = [line.strip() for line in open(exclu_file, 'r', encoding='utf-8')
                          if line.strip() and not line.startswith('#')]
 
-    # updated_services = [service for service in services if service not in excluded_services]
     if excluded_services:
         logger.debug("Excluding services: %s", excluded_services)
         return excluded_services
@@ -172,7 +169,7 @@ def sosmgr_status(url)-> Tuple[str, int | str]:
         return 'Failure', e
 
 
-def parse_error_messages(log_file: str | os.PathLike)-> List[str]:
+def read_log_error_messages(log_file: str | os.PathLike)-> List[str]:
     """Parse messages from log file"""
     messages = []
     with open(log_file, 'r', encoding='utf-8') as file:
