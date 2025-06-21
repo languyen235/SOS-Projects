@@ -1,18 +1,19 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-from UsrIntel.R1 import os, sys
+import json
+import logging
 import re
 import shlex
-import subprocess
-import json
 import socket  # for socket.getfqdn() "server domain"
-import logging
+import subprocess
 from functools import wraps
 from pathlib import Path
 from typing import List, Iterator, Tuple, Final, TextIO, Dict
+
+from UsrIntel.R1 import os, sys
 sys.path.append('/opt/cliosoft/monitoring')  # Add the parent directory to modules
-from modules.utils import (send_email, sosmgr_status,
-                           lock_script, report_disk_size, read_log_error_messages, rotate_file,
+from modules.utils import (send_email, sosmgr_web_status,
+                           lock_script, report_disk_size, read_log_error_messages, rotate_log_file,
                            get_excluded_services)
 
 
@@ -179,13 +180,18 @@ def run_sos_cmd_in_subproc(cmd: str, timeout: int, is_shell: bool = False)-> Lis
         result = subprocess.run(
             cmd if is_shell else shlex.split(cmd),
             shell=is_shell,
-            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            timeout=timeout, check=True, universal_newlines=True
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=True
         )
-        if result.stdout.count(',') == 1:
-            return result.stdout.rstrip('\n').split(',')
-        else:
-            return result.stdout.rstrip('\n').split('\n')
+
+        if result.stderr:
+            logger.error(f"Command [{cmd}] failed: {result.stderr}")
+
+        delimiter = ',' if result.stdout.count(',') == 1 else '\n'
+        return result.stdout.rstrip('\n').split(delimiter)
 
     except subprocess.TimeoutExpired:
         logger.critical(f"{run_sos_cmd_in_subproc.__name__} timed out", exc_info=True)
@@ -211,9 +217,8 @@ def get_sos_services() -> List[str]:
     return services
 
 
-def get_sos_disks() -> Iterator[str]:
+def get_sos_disks(services: List[str]) -> Iterator[str]:
     """Yields strings containing primary and cache disk paths"""
-    services = get_sos_services()
     logger.debug('Services: %s', services)
     logger.info('Querying SOS disks')
 
@@ -271,7 +276,14 @@ def get_parent_dir(disk_path: Path) -> Path:
 
 @create_data_file_decorator
 def create_data_file(data_file: Path) -> None:
-    """Creates data file of Cliosoft primary and cache disk paths"""
+    """
+    Creates a data file containing paths of primary and cache disks for Cliosoft.
+    This function retrieves disk information, filters it, and writes the relevant paths to the specified data file.
+    Parameters:
+        data_file (Path): The path where the data file will be created.
+    Raises:
+        OSError: If there is an error during file creation or writing.
+    """
     found_disks: set[Path] = set()
     logger.info('Creating data file')
 
@@ -279,9 +291,12 @@ def create_data_file(data_file: Path) -> None:
         if disk_path not in seen_disks:
             seen_disks.add(disk_path)
             file_.write(str(disk_path) + '\n')
+
+    my_services = get_sos_services()
+
     try:
         with open(data_file, 'w', newline='', encoding='utf-8') as file:
-            for row in get_sos_disks():
+            for row in get_sos_disks(my_services):
                 if re.match(r'site', row[0]):
                     continue # skip header row
                 if len(row) > 5:   # 5 columns when output contains replica path
@@ -350,25 +365,28 @@ def handle_low_disk_space(disks_with_low_space: Tuple, adding_size: int) -> None
 
 def check_web_status(web_url: str) -> None:
     """Check sosmgr web service status"""
-    mgr_status = sosmgr_status(web_url)
-    if mgr_status[0] == 'Failure':
-        logger.debug("sosmgr status: %s", mgr_status)
+    web_status, _ = sosmgr_web_status(web_url)
+    if web_status == 'Failure':
+        logger.debug("sosmgr status: %s", web_status)
         logger.critical("%s is inaccessible", web_url)
     else:
-        logger.info("sosmgr status: %s", mgr_status)
+        logger.info("sosmgr status: %s", web_status)
 
 
-def send_email_status(log_file: str | os.PathLike)-> None:
+def send_email_status(log_file: str | os.PathLike)-> int:
     """Send email if there are errors in log file"""
     _site = this_site_code().upper()
     if messages := read_log_error_messages(log_file):
         logger.error("%s disk space monitoring failed", _site)
         subject = f"Cliosoft Alert: {_site} disk monitoring check failed with errors"
         send_email(subject, messages, DDM_CONTACTS, SENDER)
-        rotate_file(log_file)
+        rotate_log_file(log_file)
+        return 1
+
     else:
         logger.info("%s disk space monitoring passed", _site)
         logger.info('Script finished')
+        return 0
 
 
 def process_cmd_line():
@@ -410,6 +428,13 @@ def initialize_service(cli_args)-> ClioService:
 
 
 def handle_disk_space(list_low_space_disks: Tuple, cli_args) -> None:
+    """
+    Handles the disk space monitoring by checking if there are disks with low space.
+    Args:
+        list_low_space_disks (Tuple): A tuple containing the disks that are low on space.
+        cli_args: Command line arguments that may include options for modifying disk size.
+    Returns: None: This function does not return a value.
+    """
     if list_low_space_disks:
         disk_size_value = ADDING_DISK_SIZE if cli_args.enable_add_size else 0
         handle_low_disk_space(list_low_space_disks, disk_size_value)
@@ -417,26 +442,29 @@ def handle_disk_space(list_low_space_disks: Tuple, cli_args) -> None:
         logger.info("All disks have enough space")
 
 
-def should_refresh_disk_file(cli_args, sos)-> bool:
-    return cli_args.refresh_disk_file or (sos.data_file.exists() and sos.data_file.stat().st_size == 0)
+def should_refresh_disk_file(cli_args, obj: ClioService)-> bool:
+    """Returns status if data file should be refreshed
+    based on command line arguments or data file size is 0
+    """
+    return cli_args.refresh_disk_file or (obj.data_file.exists() and obj.data_file.stat().st_size == 0)
 
 
-def refresh_disk_file(sos)-> None:
-    os.remove(sos.data_file) if os.path.exists(sos.data_file) else None
-    create_data_file(sos.data_file)
+def refresh_disk_file(obj: ClioService)-> None:
+    os.remove(obj.data_file) if os.path.exists(obj.data_file) else None
+    create_data_file(obj.data_file)
 
 
-def main() -> None:
+def main() -> None|int:
     """Main function"""
     cli_args = process_cmd_line()
     sos = initialize_service(cli_args)
 
+    # check sosmgr web service response
+    check_web_status(sos.web_url)
+
     # we want to refresh data file now or file does not exist
     if should_refresh_disk_file(cli_args, sos) or not sos.data_file.exists():
         refresh_disk_file(sos)
-
-    # check sosmgr web service response
-    # check_web_status(sos.web_url)
 
     # check disk space and optionally increase disk size
     list_all_disks, list_low_space_disks = disk_space_info(sos.data_file)
@@ -446,27 +474,33 @@ def main() -> None:
     csv_file = Path(sos.data_path, f"{sos.site.upper()}_disk_usages.csv")
     write_to_csv_file(csv_file, list_all_disks)
 
-    # check sosmgr web service response
-    check_web_status(sos.web_url)
-
-    # send email if there are errors
-    send_email_status(sos.log_file)
+    # return status of sending email
+    return send_email_status(sos.log_file)
 
 if __name__ == '__main__':
     lock_file = "/tmp/sos_check_disks.lock"
-    lock_fd = lock_script(lock_file)
+    lock_fd = lock_script(lock_file) # Acquire the lock
     log_level = os.environ.get('LOG_LEVEL', 'INFO').upper() # Default 'INFO' if LOG_LEVEL is not set
-    logging.basicConfig(level=log_level,
-                        format='[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s',
-                        datefmt='%Y-%m-%d %H:%M:%S',
-                        handlers=[
-                            logging.FileHandler(ClioService.log_file, mode='w'),  # Create a file handler
-                            logging.StreamHandler()  # Create a console handler
-                        ])
-    logger = logging.getLogger(__name__)
-    main()
 
-    # Release the lock file (optional)
-    os.close(lock_fd)
-    os.unlink(lock_file)
-    sys.exit(0)
+    try:
+        logging.basicConfig(level=log_level,
+                            format='[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s',
+                            datefmt='%Y-%m-%d %H:%M:%S',
+                            handlers=[
+                                logging.FileHandler(ClioService.log_file, mode='w'),  # Create a file handler
+                                logging.StreamHandler()  # Create a console handler
+                            ])
+
+        logger = logging.getLogger(__name__)
+        status = main()
+    finally:
+        logging.shutdown()
+        # Release the lock file
+        os.close(lock_fd)
+        os.unlink(lock_file)
+
+    sys.exit(status)
+    # # Release the lock file (optional)
+    # os.close(lock_fd)
+    # os.unlink(lock_file)
+    # sys.exit(status)

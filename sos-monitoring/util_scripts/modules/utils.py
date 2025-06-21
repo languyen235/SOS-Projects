@@ -151,7 +151,7 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
     logger.info("Email sent...")
 
 
-def sosmgr_status(url)-> Tuple[str, int | str]:
+def sosmgr_web_status(url)-> Tuple[str, int | str]:
     """Check sosmgr status. Credited to Intel IGPT"""
     import requests # type: ignore
     timeout = 5
@@ -166,7 +166,7 @@ def sosmgr_status(url)-> Tuple[str, int | str]:
     except requests.exceptions.RequestException as e:
         # Handle any other exceptions that occur during the request
         logger.error("An error occurred: %s", e)
-        return 'Failure', e
+        return 'Failure', 1
 
 
 def read_log_error_messages(log_file: str | os.PathLike)-> List[str]:
@@ -179,39 +179,7 @@ def read_log_error_messages(log_file: str | os.PathLike)-> List[str]:
     return messages
 
 
-def verify_file_link(file_link, expected_directory):
-    # Check if the file link exists, credited to Intel IGPT
-    if not os.path.exists(file_link):
-        logger.error(f"The file link '{file_link}' does not exist.")
-        return False
-
-    # Get the absolute path of the file link
-    # file_link_abs_path = os.path.abspath(file_link)
-
-    # Get the absolute path of the expected directory
-    expected_directory_abs_path = os.path.abspath(expected_directory)
-
-    # Check if the file link is a symbolic link
-    if os.path.islink(file_link):
-        # Get the target of the symbolic link
-        target_path = os.readlink(file_link)
-        target_abs_path = os.path.abspath(target_path)
-
-        # Verify if the target path is within the expected directory
-        if target_abs_path.startswith(expected_directory_abs_path):
-            logger.info(f"The file link '{file_link}' "
-                        f"is correctly linking to the expected directory '{expected_directory}'.")
-            return True
-        else:
-            logger.debug(f"The file link '{file_link}' "
-                         f"is not linking to the expected directory '{expected_directory}'.")
-            return False
-    else:
-        logger.error(f"The file link '{file_link}' is not a symbolic link.")
-        return False
-
-
-def rotate_file(filename: str | os.PathLike)-> None:
+def rotate_log_file(filename: str | os.PathLike)-> None:
     """Rotate file, keep last 5 files"""
     max_backup_count = 5
     if os.path.exists(filename):
@@ -219,4 +187,4 @@ def rotate_file(filename: str | os.PathLike)-> None:
             rotated_filename = f"{filename}.{i}"
             if os.path.isfile(rotated_filename):
                 os.rename(rotated_filename, f"{filename}.{i + 1}")
-    shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
+        shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
