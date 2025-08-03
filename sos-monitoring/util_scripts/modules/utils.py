@@ -1,6 +1,6 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-from UsrIntel.R1 import os, sys
+#from UsrIntel.R1 import os, sys
 import subprocess
 import re
 import time
@@ -9,6 +9,7 @@ import socket
 import logging
 from pathlib import Path
 from typing import List, Tuple
+from UsrIntel.R1 import os, sys
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +72,12 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
                f"--size {new_size}GB --immediate --exceed-forecast"
 
     logger.debug("START command: %s",stod_cmd)
-    logger.info(f"New disk size:  Size({disk_size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
+    # logger.debug(f"New disk size:  Size({disk_size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
+    logger.debug("New disk size:  Size(%sGB) + adding(%sGB) = %sGB", disk_size, adding_size, new_size)
 
     try:
         p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
+
         if result := re.search(r'(successfully).*$', p.stdout, re.I):
             logger.info("Disk size has been increased to %sGb", new_size)
             logger.debug("%s", result.group())
@@ -83,7 +86,6 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
         logger.debug("START command: %s",stod_cmd)
         logger.error("START command failed with error: %s", er.stderr)
         return False
-
 
 def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
     """read START history if disk size has been increased since the last 2 days
@@ -122,9 +124,9 @@ def report_disk_size(disk: str):
     return [x // (2**30) for x in shutil.disk_usage(disk)]
 
 
-def get_excluded_services(exclu_file: str | os.PathLike) -> List[str]:
+def get_excluded_services(excluded_service_file: str | os.PathLike) -> List[str]:
     """Read file for excluded services and remove them from service list"""
-    excluded_services = [line.strip() for line in open(exclu_file, 'r', encoding='utf-8')
+    excluded_services = [line.strip() for line in open(excluded_service_file, 'r', encoding='utf-8')
                          if line.strip() and not line.startswith('#')]
 
     if excluded_services:
@@ -188,3 +190,42 @@ def rotate_log_file(filename: str | os.PathLike)-> None:
             if os.path.isfile(rotated_filename):
                 os.rename(rotated_filename, f"{filename}.{i + 1}")
         shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
+
+
+def get_parent_dir(disk_path: Path) -> Path:
+    """Get a disk path that relatives to SQL (pg_data) folder"""
+    path = Path(disk_path, 'pg_data')
+    disk_name_level = 5  #  5 elements: ('/', 'nfs', 'site', 'disks', 'hipipde_soscache_013')
+    level = len(path.parents) - disk_name_level
+    return path.parents[level]
+
+
+def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
+    """Save data to cvs file"""
+    import csv
+    with open(csv_file, 'w', encoding='utf-8', newline='') as file:
+        csv_writer = csv.writer(file)
+        csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
+        for row in data:
+            csv_writer.writerow(row)
+
+
+def disk_space_info(file: str | Path, size_threshold: int)-> Tuple[Tuple[str], Tuple[str]]:
+    """ Check disk space and return disk info and low space disks"""
+    disks = Path(file).read_text(encoding='utf-8').strip().splitlines()
+    disk_info_all = ()
+    low_space_disks = ()
+    # get free space for each disk
+    for disk in sorted(disks, key=os.path.basename):
+        size, used, avail = report_disk_size(disk)
+        disk_info_all += ([disk, size, used, avail],)
+        if avail <= size_threshold:
+            low_space_disks += ([disk, size, used, avail],)
+    return disk_info_all, low_space_disks
+
+
+__all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
+            'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
+            'read_log_error_messages', 'rotate_log_file', 'get_parent_dir', 'write_to_csv_file',
+            'disk_space_info'
+            ]
