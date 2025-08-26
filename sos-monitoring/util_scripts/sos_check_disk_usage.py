@@ -8,7 +8,7 @@ import socket  # for socket.getfqdn() "server domain"
 import subprocess
 from functools import wraps
 from pathlib import Path
-from typing import List, Iterator, Tuple, Final, TextIO, Dict
+from typing import List, Iterator, Tuple, Final, TextIO, Dict, Callable
 
 from UsrIntel.R1 import os, sys
 sys.path.append('/opt/cliosoft/monitoring')  # Add the parent directory to modules
@@ -59,7 +59,7 @@ class ClioService:
             self.save_env_data()
 
     @staticmethod
-    def logging_debug_decorator(func)-> callable:
+    def logging_debug_decorator(func)-> Callable:
         """ Decorate debug information to be logged"""
         @wraps(func)
         def logit(self, *args, **kwargs):
@@ -152,21 +152,13 @@ class ClioService:
 
     @staticmethod
     def get_server_config_path(site)-> str:
-        """Set the SOS_SERVERS_DIR path for the given site."""
-        real_path = os.path.realpath(SERVER_CONFIG_LINK)
+        """Return the path for Cliosoft's SOS_SERVERS_DIR."""
 
-        if site == 'sc':
-            return SERVER_CONFIG_PATH
-        elif site in SITES or re.match(r'zsc\d+', site):
-            if re.search(r'(SERVERS)(7$|8-replica$)', real_path):
-                return real_path
-            else:
-                # logger.error(f"Failed to match server config path for {site} site: {real_path}")
-                logger.error("Failed to match server config path for %s site: %s", site, real_path)
-                raise ValueError(f'Invalid server config path: {real_path}')
-        else:
-            logger.debug("Running on test server: %s", site)
+        real_path = os.path.realpath(SERVER_CONFIG_LINK)
+        if re.search(r'(SERVERS8-replica$)', real_path) or site != 'sc':
             return real_path
+
+        return SERVER_CONFIG_PATH
 
 
 def this_site_code() -> str:
@@ -252,12 +244,12 @@ def get_sos_disks(services: List[str]) -> Iterator[str]:
         raise ValueError('No SOS disks found')
 
     for line in lines:
-        line = line.rstrip('\n').split(',')
-        logger.debug("SOS disk: %s", line)
-        yield line
+        my_list: list[str] = line.rstrip('\n').split(',')
+        logger.debug("SOS disk: %s", my_list)
+        yield my_list # noqa, ignore=E501
 
 
-def create_data_file_decorator(func: callable) -> callable:
+def create_data_file_decorator(func: Callable) -> Callable:
     """Delete and re-create file if file is older than a day"""
     @wraps(func)
     def wrapper(*args, **kwargs):
@@ -272,14 +264,6 @@ def create_data_file_decorator(func: callable) -> callable:
         if data_file.exists() is False:
             func(*args, **kwargs)
     return wrapper
-
-
-# def get_parent_dir(disk_path: Path) -> Path:
-#     """Get a disk path that relatives to SQL (pg_data) folder"""
-#     path = Path(disk_path, 'pg_data')
-#     disk_name_level = 5  #  5 elements: ('/', 'nfs', 'site', 'disks', 'hipipde_soscache_013')
-#     level = len(path.parents) - disk_name_level
-#     return path.parents[level]
 
 
 @create_data_file_decorator
@@ -300,11 +284,11 @@ def create_data_file(data_file: Path) -> None:
             seen_disks.add(disk_path)
             file_.write(str(disk_path) + '\n')
 
-    my_services = get_sos_services()
+    sos_services = get_sos_services()
 
     try:
         with open(data_file, 'w', newline='', encoding='utf-8') as file:
-            for row in get_sos_disks(my_services):
+            for row in get_sos_disks(sos_services):
                 if re.match(r'site', row[0]):
                     continue # skip header row
                 if len(row) > 5:   # 5 columns when output contains replica path
@@ -323,30 +307,6 @@ def create_data_file(data_file: Path) -> None:
 
     # unix sed command to substitute text in file
     subprocess.run(f"sed -i 's:^/nfs/.*/disks:/nfs/site/disks:g' {str(data_file)}", check=True, shell=True)
-
-
-# def disk_space_info(file: str | Path, size_threshold: int)-> Tuple[Tuple[str], Tuple[str]]:
-#     """ Check disk space and return disk info and low space disks"""
-#     disks = Path(file).read_text(encoding='utf-8').strip().splitlines()
-#     disk_info_all = ()
-#     low_space_disks = ()
-#     # get free space for each disk
-#     for disk in sorted(disks, key=os.path.basename):
-#         size, used, avail = report_disk_size(disk)
-#         disk_info_all += ([disk, size, used, avail],)
-#         if avail <= size_threshold:
-#             low_space_disks += ([disk, size, used, avail],)
-#     return disk_info_all, low_space_disks
-
-
-# def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
-#     """Save data to cvs file"""
-#     import csv
-#     with open(csv_file, 'w', encoding='utf-8', newline='') as file:
-#         csv_writer = csv.writer(file)
-#         csv_writer.writerow(['Disk', 'Total', 'Used', 'Available'])
-#         for row in data:
-#             csv_writer.writerow(row)
 
 
 def handle_low_disk_space(disks_with_low_space: Tuple, adding_size: int) -> None:
@@ -386,7 +346,7 @@ def send_email_status(log_file: str | os.PathLike)-> bool:
     _site = this_site_code().upper()
     if messages := read_log_error_messages(log_file):
         logger.error("%s disk space monitoring failed", _site)
-        subject = f"Cliosoft Alert: {_site} disk monitoring check failed with errors"
+        subject = f"Cliosoft Alert: {_site} disk monitoring failed with errors"
         send_email(subject, messages, DDM_CONTACTS, SENDER)
         rotate_log_file(log_file)
         return False
@@ -513,7 +473,3 @@ if __name__ == '__main__':
         os.unlink(lock_file)
 
     sys.exit(status)
-    # # Release the lock file (optional)
-    # os.close(lock_fd)
-    # os.unlink(lock_file)
-    # sys.exit(status)

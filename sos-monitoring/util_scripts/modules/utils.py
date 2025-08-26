@@ -1,6 +1,5 @@
 #!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
 
-#from UsrIntel.R1 import os, sys
 import subprocess
 import re
 import time
