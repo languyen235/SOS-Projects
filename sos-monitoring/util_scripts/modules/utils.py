@@ -86,7 +86,7 @@ def increase_disk_size(disk_name: str, adding_size: int) -> bool:
         logger.error("START command failed with error: %s", er.stderr)
         return False
 
-def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
+def has_disk_size_been_increased(disk_info: str, days: int) -> bool | None:
     """read START history if disk size has been increased since the last 2 days
     1) Expected output (There may be a blank line in output depending on OS)
     Type,SubmitTime
@@ -98,7 +98,7 @@ def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
     """
     disk_name = Path(disk_info).name
     stod_request_cmd: str = "/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history " \
-                f"{day}d --number 1 \"description=~'{disk_name}' && type=~'resize'\""
+                f"{days}d --number 1 \"description=~'{disk_name}' && type=~'resize'\""
 
     try:
         p = subprocess.run(stod_request_cmd, capture_output=True, check=True, shell=True, text=True)
@@ -106,7 +106,7 @@ def has_disk_size_been_increased(disk_info: str, day: int) -> bool | None:
         if search_result:
             logger.info("%s", search_result.group())
             return True
-        logger.info("Disk %s has not been increased in the last %s days", disk_name.split('/')[-1], day)
+        logger.info("Disk %s has not been increased in the last %s days", disk_name.split('/')[-1], days)
         return None
     except subprocess.CalledProcessError as er:
         logger.debug("START command: %s",stod_request_cmd)
@@ -170,7 +170,7 @@ def sosmgr_web_status(url)-> Tuple[str, int | str]:
         return 'Failure', 1
 
 
-def read_log_error_messages(log_file: str | os.PathLike)-> List[str]:
+def read_log_for_errors(log_file: str | os.PathLike)-> List[str]:
     """Parse messages from log file"""
     messages = []
     with open(log_file, 'r', encoding='utf-8') as file:
@@ -225,6 +225,6 @@ def disk_space_info(file: str | Path, size_threshold: int)-> Tuple[Tuple[str], T
 
 __all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
-            'read_log_error_messages', 'rotate_log_file', 'get_parent_dir', 'write_to_csv_file',
+            'read_log_for_errors', 'rotate_log_file', 'get_parent_dir', 'write_to_csv_file',
             'disk_space_info'
             ]
