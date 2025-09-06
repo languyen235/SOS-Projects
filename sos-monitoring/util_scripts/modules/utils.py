@@ -124,7 +124,7 @@ def report_disk_size(disk: str):
 
 
 def get_excluded_services(excluded_service_file: str | os.PathLike) -> List[str]:
-    """Read file for excluded services and remove them from service list"""
+    """Read file for excluded services and return list of service names"""
     excluded_services = [line.strip() for line in open(excluded_service_file, 'r', encoding='utf-8')
                          if line.strip() and not line.startswith('#')]
 
@@ -193,9 +193,16 @@ def rotate_log_file(filename: str | os.PathLike)-> None:
 
 def get_parent_dir(disk_path: Path) -> Path:
     """Get a disk path that relatives to SQL (pg_data) folder"""
+    if not disk_path.exists():
+        raise FileNotFoundError(f"Disk path {disk_path} does not exist")
+
     path = Path(disk_path, 'pg_data')
     disk_name_level = 5  #  5 elements: ('/', 'nfs', 'site', 'disks', 'hipipde_soscache_013')
     level = len(path.parents) - disk_name_level
+
+    if level < 0:
+        raise ValueError(f"Path is too shallow to get parent level: {path}")
+
     return path.parents[level]
 
 
@@ -209,18 +216,18 @@ def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
             csv_writer.writerow(row)
 
 
-def disk_space_info(file: str | Path, size_threshold: int)-> Tuple[Tuple[str], Tuple[str]]:
-    """ Check disk space and return disk info and low space disks"""
-    disks = Path(file).read_text(encoding='utf-8').strip().splitlines()
-    disk_info_all = ()
+def disk_space_info(disks:list[str], size_threshold: int)-> Tuple[Tuple[str], Tuple[str]]:
+    """ Check disk space and return lists of all disks and low space disks"""
+    all_disks = ()
     low_space_disks = ()
     # get free space for each disk
     for disk in sorted(disks, key=os.path.basename):
         size, used, avail = report_disk_size(disk)
-        disk_info_all += ([disk, size, used, avail],)
+        disk_info = [disk, size, used, avail]
+        all_disks += (disk_info,)
         if avail <= size_threshold:
-            low_space_disks += ([disk, size, used, avail],)
-    return disk_info_all, low_space_disks
+            low_space_disks += (disk_info,)
+    return all_disks, low_space_disks
 
 
 __all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
