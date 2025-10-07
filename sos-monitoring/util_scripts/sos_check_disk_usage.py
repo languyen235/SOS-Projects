@@ -1,4 +1,4 @@
-#!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
+#!/opt/cliosoft/monitoring/venv/bin/python3.12
 
 import json
 import logging
@@ -10,7 +10,7 @@ import argparse
 from functools import wraps
 from pathlib import Path
 from typing import List, Iterator, Tuple, TextIO, Dict, Callable
-from UsrIntel.R1 import os, sys
+import os, sys
 
 # Add the parent directory to modules
 sys.path.append('/opt/cliosoft/monitoring')
@@ -31,6 +31,26 @@ SITES = ['sc','sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'al
 DISK_SIZE_INCREASE_DAYS = 2  # Days to check for recent disk size increases
 
 #----
+def setup_logging() -> logging.Logger:
+    """Configure and return a logger instance.
+    Returns:
+        logging.Logger: Configured logger instance
+    """
+    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+    log_format = '[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s'
+
+    logging.basicConfig(
+        level=log_level,
+        format=log_format,
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler(SosDiskMonitor.log_file, mode='w'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)
+
+
 class SosDiskMonitor:
     """Setup Cliosoft application service"""
 
@@ -87,11 +107,11 @@ class SosDiskMonitor:
     @logging_debug_decorator
     def load_from_env_data_file(self):
         """ Load environment variables from JSON file """
-        data = self.read_from_env_data_file(self.env_data_file)
+        data: Dict = self.read_from_env_data_file(self.env_data_file)
         self.update_site_variables(data)
         self.update_env_variables(data)
 
-    def update_site_variables(self, data):
+    def update_site_variables(self, data: Dict):
         """Update instance variables from loaded data"""
         self.site_name = data['site_name']
         self.web_url = data['site_url']
@@ -99,7 +119,7 @@ class SosDiskMonitor:
 
 
     @staticmethod
-    def update_env_variables(data):
+    def update_env_variables(data: Dict):
         """update environment variables from loaded data"""
         os.environ.update({
             'SOS_SERVERS_DIR': data['sos_servers_dir'],
@@ -174,11 +194,6 @@ class SosDiskMonitor:
         if re.search(r'(SERVERS8-replica$)', real_path) or site != 'sc':
             return real_path
         return SERVER_CONFIG_PATH
-
-
-def this_site_code() -> str:
-    """Returns this site code"""
-    return socket.getfqdn().split('.')[1]
 
 
 def run_sos_cmd_in_subproc(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
@@ -256,32 +271,29 @@ def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
     logger.debug('Services: %s', services)
     logger.info('Querying SOS disks for %d services', len(services))
 
+    server_role = os.environ['SOS_SERVER_ROLE']
+    if server_role not in ['replica', 'repo']:
+        logger.error("Unknown server role: %s", server_role)
+        raise ValueError(f'Unknown server role:  {server_role}')
+
     # Define commands based on server role
     server_role_commands = {
         'replica': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -rpa -pcl -rcl -s {','.join(services)}",
         'repo': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -pcl -s {','.join(services)}",
     }
 
-    server_role = os.environ['SOS_SERVER_ROLE']
-    sos_cmd = server_role_commands.get(server_role)
-
-    if sos_cmd is None:
-        logger.error("Unknown server role: %s", server_role)
-        raise ValueError(f'Unknown server role:  {server_role}')
-
-    lines = run_sos_cmd_in_subproc(sos_cmd, timeout=COMMAND_TIMEOUT)
+    sos_get_disks_cmd = server_role_commands.get(server_role)
+    lines = run_sos_cmd_in_subproc(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
     if not lines:
         error_msg = "No SOS disks found"
         logger.error(error_msg)
         raise ValueError(error_msg)
 
-    for line in lines:
-        if not line.strip() or line.startswith('site'):
-            continue  # Skip empty lines and headers
-
-        disk_info = [item.strip() for item in line.split(',')]
-        logger.debug("SOS disk: %s", disk_info)
-        yield disk_info
+    for line in filter(None, map(str.strip, lines)):  # Skip empty lines
+        if not line.startswith('site'):  # Skip headers
+            disk_info = [text.strip() for text in line.split(',')]
+            logger.debug("Parsed SOS disk: %s", disk_info)
+            yield disk_info
 
 
 def create_data_file_decorator(func: Callable) -> Callable:
@@ -292,16 +304,23 @@ def create_data_file_decorator(func: Callable) -> Callable:
     @wraps(func)
     def wrapper(*args, **kwargs):
         data_file = args[0]
-        if data_file.exists() and file_older_than(data_file, day=1):  # older than 1 day
-            try:
-                logger.info('Data file is more than a day old...Create a new data file')
+        try:
+            # If file exists and is older than 1 day, remove it
+            if data_file.exists() and file_older_than(data_file, day=1):
+                logger.info('Data file is more than a day old. Removing old file...')
                 data_file.unlink()
-            except OSError as e:
-                logger.error("Failed to remove old data file: %s", e)
-                raise
-
-        if data_file.exists() is False:
-            func(*args, **kwargs)
+            
+            # If file doesn't exist (either didn't exist or was just removed)
+            if not data_file.exists():
+                logger.info('Creating new data file...')
+                return func(*args, **kwargs)
+            
+            logger.debug('Using existing data file (less than a day old)')
+            return None
+            
+        except OSError as e:
+            logger.error("Error handling data file %s: %s", data_file, e)
+            raise
 
     return wrapper
 
@@ -353,14 +372,14 @@ def create_data_file(data_file: Path) -> None:
         raise
 
 
-def handle_low_disk_space(disks_with_low_space: Tuple, adding_size: int) -> None:
+def handle_low_disk_space(disks: Tuple, adding_size: int) -> None:
     """
     Handle disks with low space by logging warnings and optionally increasing disk size.
     Args:
-        disks_with_low_space: List of tuples containing disk info (path, size, used, available)
+        disks: List of tuples containing disk info (path, size, used, available)
         adding_size: Size in GB to add to the disk (0 to disable auto-increase)
     """
-    for disk_info in disks_with_low_space:
+    for disk_info in disks:
         disk_path, size, used, avail = disk_info
         logger.warning("%s Size: %sGB; Avail: %sGB *** Low disk space",
                       disk_path, size, avail)
@@ -422,9 +441,11 @@ def process_command_line()-> argparse.Namespace:
         """,
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-        Use -rdf | --refresh_disk_file to refresh data file now (default: every 24 hours)
-        Use -eas | --enable_add_size to enable automation for adding disk space
-        Use -tst | --test to flag that script is running on a test server
+        Options:
+        -dr | --disk-refresh    Refresh the disk file manually. 
+                                (Default: automatically refreshes every 24 hours)
+        -as | --add-size        Enable automation for adding disk space
+        -tm | --test-mode       Flag that the script is running on a test server.
 
         Logging control (set in environment):
         - tcsh: setenv LOG_LEVEL DEBUG
@@ -432,28 +453,24 @@ def process_command_line()-> argparse.Namespace:
         - cron: LOG_LEVEL=DEBUG && python3 sos_check_disk_usage.py [args]
         """
     )
-    parser.add_argument("-rdf", "--refresh_disk_file", action="store_true", help='Refresh data file now')
-    parser.add_argument("-eas", "--enable_add_size", action="store_true", help='Enable increasing disk size')
-    parser.add_argument("-tst", "--test", action="store_true", help='Indicate running on test server')
+    parser.add_argument("-dr", "--disk-refresh", action="store_true", help='Refresh data file manually')
+    parser.add_argument("-as", "--add-size", action="store_true", help='Enable increasing disk size')
+    parser.add_argument("-tm", "--test-mode", action="store_true", help='Indicate running on test server')
     logger.debug('Command line arguments: %s', parser.parse_args())
     return parser.parse_args()
 
 
 def initialize_service(cli_args)-> SosDiskMonitor:
     """Initialize service based on site code or test flag"""
-    if cli_args.test:
+    if cli_args.test_mode:
         logger.debug('Running script on DDM test server')
         return SosDiskMonitor('ddm')
     else:
-        logger.debug('Running script on production server')
-        return SosDiskMonitor(this_site_code())
+        return SosDiskMonitor(site_code())
 
-
-def refresh_disk_file(file: Path)-> None:
+def prepare_data_file(file: Path)-> None:
     """Refresh data file"""
-    if os.path.exists(file):
-        os.remove(file)
-
+    file.unlink(missing_ok=True)
     create_data_file(file)
 
 
@@ -468,15 +485,15 @@ def main() -> None|int:
     check_web_status(sosMonitor.web_url)
 
     # # Refresh disk data file if needed
-    if cli_args.refresh_disk_file or not sosMonitor.data_file.exists():
-        refresh_disk_file(sosMonitor.data_file)
+    if cli_args.disk_refresh or not sosMonitor.data_file.exists():
+        prepare_data_file(sosMonitor.data_file)
 
     # check disk space and optionally increase disk size
     _disks = sosMonitor.data_file.read_text(encoding='utf-8').strip().splitlines()
     all_disks, low_space_disks = disk_space_info(_disks, LOW_SPACE_THRESHOLD_GB)
 
     if low_space_disks:
-        disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.enable_add_size else 0
+        disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.add_size else 0
         handle_low_disk_space(low_space_disks, disk_size_to_add)
     else:
         logger.info("All disks have sufficient space")
@@ -496,26 +513,13 @@ def main() -> None|int:
     return 0
 
 
-
 #-----  Main   -----
 if __name__ == '__main__':
     # Set up file locking to prevent multiple instances
-    lock_file = "/tmp/sos_check_disks.lock"
-    lock_fd = lock_script(lock_file) # Acquire the lock
+    LOCK_FILE = "/tmp/sos_check_disks.lock"
+    lock_fd = lock_script(LOCK_FILE) # Acquire the lock
+    logger = setup_logging()
 
-    # Configure logging
-    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper() # Default 'INFO' if LOG_LEVEL is not set
-    logging.basicConfig(
-        level=log_level,
-        format='[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(SosDiskMonitor.log_file, mode='w'),  # Create a file handler
-            logging.StreamHandler()  # Create a console handler
-        ]
-    )
-
-    logger = logging.getLogger(__name__)
     try:
         # sys.exit(main())
         main()
@@ -523,5 +527,5 @@ if __name__ == '__main__':
         # Clean up lock file
         if 'lock_fd' in locals():
             os.close(lock_fd)
-            os.unlink(lock_file)
+            os.unlink(LOCK_FILE)
         logging.shutdown()

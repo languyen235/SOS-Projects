@@ -1,5 +1,6 @@
-#!/usr/intel/pkgs/python3/3.11.1/bin/python3.11
+#!/opt/cliosoft/monitoring/venv/bin/python3.12
 
+import os, sys
 import subprocess
 import re
 import time
@@ -8,7 +9,6 @@ import socket
 import logging
 from pathlib import Path
 from typing import List, Tuple
-from UsrIntel.R1 import os, sys
 
 logger = logging.getLogger(__name__)
 
@@ -32,62 +32,60 @@ def lock_script(lock_file: str):
         logger.warning("Another instance of the script is already running.")
         sys.exit(1)
 
-def file_older_than(file_path: str | os.PathLike, day: int = 1):
-    """Return status if file is older than number of days"""
-    # time_difference = current_time - last_modified_time_on_file
+def file_older_than(file_path: str | os.PathLike, num_day: int=1):
+    """Return true if file is older than number of days"""
     time_difference = time.time() - os.path.getmtime(file_path)
-    # one day (86400 seconds)
-    one_day_in_seconds = 24 * 60 * 60
+    seconds_in_a_day = 86400  # 24 * 60 * 60
 
-    if time_difference > (one_day_in_seconds * day):
+    if time_difference > (seconds_in_a_day * num_day):
         return True
-    return False
+    else:
+        return False
 
 
 def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     """Increase disk size using START command
-    1. Expected output for success:
-    Your request is being processed
-    successfully resized user area /nfs/site/disks/ddmtest_sosrepo_001
     """
-    # get site code
-    _this_site = socket.getfqdn().split('.')[1]
-
-    # <size> // (2**30) converts bytes to Gb and keep only integer, discard the decimal part
-    disk_size = (shutil.disk_usage(disk_name)[0]) // (2**30)
-
-    if disk_size >= 1000:
-        factoring_value = 100
-    elif disk_size >= 100:
-        factoring_value = 10
-    else:
-        logger.error('%s original size is less than 100GB...Auto-resizing is not supported', disk_name)
-        return False
-
-    # rounding down to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
-    rounded_down_value = (disk_size // factoring_value) * factoring_value
-    new_size = rounded_down_value + adding_size
-    stod_cmd = f"/usr/intel/bin/stod resize --cell {_this_site} --path {disk_name} " \
-               f"--size {new_size}GB --immediate --exceed-forecast"
-
-    logger.debug("START command: %s",stod_cmd)
-    # logger.debug(f"New disk size:  Size({disk_size}Gb) + adding({adding_size}Gb) = {new_size}Gb")
-    logger.debug("New disk size:  Size(%sGB) + adding(%sGB) = %sGB", disk_size, adding_size, new_size)
-
     try:
-        p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
+        total, _, _ = shutil.disk_usage(disk_name)
+        disk_size = total // (2**30)    # <size> // (2**30) converts bytes to Gb and keep only integer number
 
-        if result := re.search(r'(successfully).*$', p.stdout, re.I):
-            logger.info("Disk size has been increased to %sGb", new_size)
-            logger.debug("%s", result.group())
-            return True
-    except subprocess.CalledProcessError as er:
+        # factoring value
+        if disk_size >= 1000:
+            factor = 100
+        elif disk_size >= 100:
+            factor = 10
+        else:
+            logger.error('%s original size is less than 100GB...Auto-resizing is not supported', disk_name)
+            return False
+
+        # rounding down to the nearest 1000 or 10 (for example: 501 -> 500, 1024 -> 1000)
+        rounded_size = (disk_size // factor) * factor
+        new_size = rounded_size + adding_size
+        stod_cmd = (
+            f"/usr/intel/bin/stod resize --cell {site_code()} --path {disk_name} "
+            f"--size {new_size}GB --immediate --exceed-forecast"
+        )
+
         logger.debug("START command: %s",stod_cmd)
-        logger.error("START command failed with error: %s", er.stderr)
+        logger.debug("New disk size:  Size(%sGB) + adding(%sGB) = %sGB", disk_size, adding_size, new_size)
+
+        p = subprocess.run(stod_cmd, capture_output=True, check=True, text=True, shell=True)
+        if match := re.search(r'(successfully).*$', p.stdout, re.I):
+            logger.info("Disk size has been increased to %sGb", new_size)
+            logger.debug("%s", match.group())
+            return True
+        else:
+            logger.error("START command completed but with error: %s", p.stderr)
+            return False
+
+    except subprocess.CalledProcessError as e:
+        logger.error("START command failed with error: %s", e.stderr)
         return False
+
 
 def has_disk_size_been_increased(disk_info: str, days: int) -> bool | None:
-    """read START history if disk size has been increased since the last 2 days
+    """Check if disk size has been increased in the last `days` days using START history.
     1) Expected output (There may be a blank line in output depending on OS)
     Type,SubmitTime
     stod resize,10/24/2024 13:47:04
@@ -97,22 +95,26 @@ def has_disk_size_been_increased(disk_info: str, days: int) -> bool | None:
     Error: request timed out, please try with --timeout switch
     """
     disk_name = Path(disk_info).name
-    stod_request_cmd: str = "/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv --history " \
-                f"{days}d --number 1 \"description=~'{disk_name}' && type=~'resize'\""
-
+    stod_request_cmd = (
+        f"/usr/intel/bin/stodstatus requests --field Type,SubmitTime --format csv "
+        f"--history {days}d --number 1 \"description=~'{disk_name}' && type=~'resize'\""
+    )
     try:
         p = subprocess.run(stod_request_cmd, capture_output=True, check=True, shell=True, text=True)
-        search_result = re.search(r"stod\s+resize,\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}", p.stdout)
-        if search_result:
-            logger.info("%s", search_result.group())
+        match = re.search(r"stod\s+resize,\d{2}/\d{2}/\d{4}\s+\d{2}:\d{2}:\d{2}", p.stdout)
+        if match:
+            logger.info("Resize found:%s", match.group())
             return True
-        logger.info("Disk %s has not been increased in the last %s days", disk_name.split('/')[-1], days)
-        return None
+        else:
+            logger.info(
+                "Disk %s has not been increased in the last %s days",
+                disk_name.split('/')[-1], days
+            )
+            return False
     except subprocess.CalledProcessError as er:
         logger.debug("START command: %s",stod_request_cmd)
         logger.error("START command failed with error: %s",er.stderr)
-        return None
-
+        return False
 
 
 def report_disk_size(disk: str):
@@ -181,14 +183,34 @@ def read_log_for_errors(log_file: str | os.PathLike)-> List[str]:
 
 
 def rotate_log_file(filename: str | os.PathLike)-> None:
-    """Rotate file, keep last 5 files"""
+    """Rotate log files, keep last 5 files"""
+    path = Path(filename)
+    if not path.is_file():
+        return  # Nothing to rotate
+
     max_backup_count = 5
-    if os.path.exists(filename):
-        for i in reversed(range(1, max_backup_count)):
-            rotated_filename = f"{filename}.{i}"
-            if os.path.isfile(rotated_filename):
-                os.rename(rotated_filename, f"{filename}.{i + 1}")
-        shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
+    # Remove the oldest backup if it exists
+    oldest = path.with_name(f"{path.name}.{max_backup_count}")
+    if oldest.exists():
+        oldest.unlink()
+
+    # Shift existing logs
+    # if os.path.exists(filename):
+    #     for i in reversed(range(1, max_backup_count)):
+    #         rotated_filename = f"{filename}.{i}"
+    #         if os.path.isfile(rotated_filename):
+    #             os.rename(rotated_filename, f"{filename}.{i + 1}")
+
+    # Shift existing backups
+    for i in reversed(range(1, max_backup_count)):
+        src = path.with_name(f"{path.name}.{i}")
+        dst = path.with_name(f"{path.name}.{i + 1}")
+        if src.exists():
+            src.rename(dst)
+
+    # Copy current log to .1
+    # shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
+    shutil.copy2(path, path.with_name(f"{path.name}.1"))
 
 
 def get_parent_dir(disk_path: Path) -> Path:
@@ -196,12 +218,16 @@ def get_parent_dir(disk_path: Path) -> Path:
     if not disk_path.exists():
         raise FileNotFoundError(f"Disk path {disk_path} does not exist")
 
-    path = Path(disk_path, 'pg_data')
+    path = disk_path / 'pg_data'
     disk_name_level = 5  #  5 elements: ('/', 'nfs', 'site', 'disks', 'hipipde_soscache_013')
     level = len(path.parents) - disk_name_level
 
     if level < 0:
-        raise ValueError(f"Path is too shallow to get parent level: {path}")
+        # raise ValueError(f"Path is too shallow to get parent level: {path}")
+        raise ValueError(
+            f"Path '{path}' is too shallow (has {len(path.parents)} levels) "
+            f"to get parent at level {disk_name_level}"
+        )
 
     return path.parents[level]
 
@@ -218,20 +244,24 @@ def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
 
 def disk_space_info(disks:list[str], size_threshold: int)-> Tuple[Tuple[str], Tuple[str]]:
     """ Check disk space and return lists of all disks and low space disks"""
-    all_disks = ()
-    low_space_disks = ()
+    all_disks = []
+    low_space_disks = []
     # get free space for each disk
     for disk in sorted(disks, key=os.path.basename):
         size, used, avail = report_disk_size(disk)
-        disk_info = [disk, size, used, avail]
-        all_disks += (disk_info,)
+        disk_info = (disk, size, used, avail)
+        all_disks.append(disk_info)
         if avail <= size_threshold:
-            low_space_disks += (disk_info,)
-    return all_disks, low_space_disks
+            low_space_disks.append(disk_info)
 
+    return tuple(all_disks), tuple(low_space_disks)
+
+def site_code():
+    """Returns this site code"""
+    return socket.getfqdn().split('.')[1]
 
 __all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
             'read_log_for_errors', 'rotate_log_file', 'get_parent_dir', 'write_to_csv_file',
-            'disk_space_info'
+            'disk_space_info', 'site_code'
             ]
