@@ -4,7 +4,6 @@ import json
 import logging
 import re
 import shlex
-import socket
 import subprocess
 import argparse
 from functools import wraps
@@ -90,7 +89,7 @@ class SosDiskMonitor:
 
             # Log relevant debug information
             log_vars = [
-                ("Disk data file", self.data_file),
+                ("Disk data file", self.DATA_FILE),
                 ("SOS_SERVERS_DIR", os.environ['SOS_SERVERS_DIR']),
                 ("CLIOSOFT_DIR", os.environ['CLIOSOFT_DIR']),
                 ("SOS_SERVER_ROLE", os.environ['SOS_SERVER_ROLE']),
@@ -160,8 +159,8 @@ class SosDiskMonitor:
         try:
             with open(self.env_data_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4) # noqa, ignore=E501
-        except IOError as e:
-            logger.error("Failed to write environment data file: %s", e)
+        except (IOError, OSError) as file_error:
+            logger.error("Failed to write environment data file: %s", file_error)
             raise
 
 
@@ -171,8 +170,8 @@ class SosDiskMonitor:
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error("Failed to read environment data file: %s", e)
+        except (IOError, json.JSONDecodeError) as file_error:
+            logger.error("Failed to read environment data file: %s", file_error)
             raise
 
 
@@ -228,9 +227,9 @@ def run_sos_cmd_in_subproc(cmd: str, timeout: int, is_shell: bool = False)-> Lis
 
     except subprocess.TimeoutExpired:
         logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
-    except subprocess.CalledProcessError as e:
+    except subprocess.CalledProcessError as proc_error:
         logger.critical("Command [%s] failed with status %d: %s",
-                       cmd, e.returncode, e.stderr, exc_info=True)
+                       cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
 
     return None
 
@@ -306,7 +305,7 @@ def create_data_file_decorator(func: Callable) -> Callable:
         data_file = args[0]
         try:
             # If file exists and is older than 1 day, remove it
-            if data_file.exists() and file_older_than(data_file, day=1):
+            if data_file.exists() and file_older_than(data_file, num_day=1):
                 logger.info('Data file is more than a day old. Removing old file...')
                 data_file.unlink()
             
@@ -318,8 +317,8 @@ def create_data_file_decorator(func: Callable) -> Callable:
             logger.debug('Using existing data file (less than a day old)')
             return None
             
-        except OSError as e:
-            logger.error("Error handling data file %s: %s", data_file, e)
+        except OSError as file_error:
+            logger.error("Error handling data file %s: %s", data_file, file_error)
             raise
 
     return wrapper
@@ -421,8 +420,8 @@ def send_notification(subject: str, message: list[str]) -> bool:
     try:
         send_email(subject, message, DDM_CONTACTS, SENDER)
         return True
-    except Exception as e:
-        logger.error("Failed to send email notification: %s", e)
+    except Exception as error:
+        logger.error("Failed to send email notification: %s", error)
         return False
 
 
@@ -474,43 +473,138 @@ def prepare_data_file(file: Path)-> None:
     create_data_file(file)
 
 
-def main() -> None|int:
-    """Main function"""
-    cli_args = process_command_line()
+# def main() -> None|int:
+#     """Main function"""
+#     cli_args = process_command_line()
+#
+#     # Initialize object
+#     sosMonitor= initialize_service(cli_args)
+#
+#     # check sosmgr web service response
+#     check_web_status(sosMonitor.web_url)
+#
+#     # # Refresh disk data file if needed
+#     if cli_args.disk_refresh or not sosMonitor.data_file.exists():
+#         prepare_data_file(sosMonitor.data_file)
+#
+#     # check disk space and optionally increase disk size
+#     _disks = sosMonitor.data_file.read_text(encoding='utf-8').strip().splitlines()
+#     all_disks, low_space_disks = disk_space_info(_disks, LOW_SPACE_THRESHOLD_GB)
+#
+#     if low_space_disks:
+#         disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.add_size else 0
+#         handle_low_disk_space(low_space_disks, disk_size_to_add)
+#     else:
+#         logger.info("All disks have sufficient space")
+#
+#     # save disk usages to csv file
+#     csv_file = Path(sosMonitor.data_path, f"{sosMonitor.site.upper()}_disk_usages.csv")
+#     write_to_csv_file(csv_file, all_disks)
+#
+#
+#     if messages := read_log_for_errors(sosMonitor.log_file):
+#         subject = f"Cliosoft Alert: {sosMonitor.site.upper()} disk monitoring failed"
+#         send_notification(subject, messages)
+#         rotate_log_file(sosMonitor.log_file)
+#         return 1
+#
+#     logger.info("%s disk space monitoring completed successfully", sosMonitor.site.upper())
+#     return 0
 
-    # Initialize object
-    sosMonitor= initialize_service(cli_args)
+def main() -> int:
+    """
+    Main function to monitor and manage SOS disk usage.
 
-    # check sosmgr web service response
-    check_web_status(sosMonitor.web_url)
+    This function:
+    1. Processes command line arguments
+    2. Initializes the monitoring service
+    3. Checks SOS web service status
+    4. Refreshes disk data if needed
+    5. Monitors disk space and handles low space scenarios
+    6. Logs and reports any errors
 
-    # # Refresh disk data file if needed
-    if cli_args.disk_refresh or not sosMonitor.data_file.exists():
-        prepare_data_file(sosMonitor.data_file)
+    Returns:
+        int: 0 on success, 1 on failure
+    """
+    try:
+        logger.info("Starting disk monitoring process")
 
-    # check disk space and optionally increase disk size
-    _disks = sosMonitor.data_file.read_text(encoding='utf-8').strip().splitlines()
-    all_disks, low_space_disks = disk_space_info(_disks, LOW_SPACE_THRESHOLD_GB)
+        # Process command line arguments
+        cli_args = process_command_line()
+        logger.debug("Command line arguments processed: %s", vars(cli_args))
 
-    if low_space_disks:
-        disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.add_size else 0
-        handle_low_disk_space(low_space_disks, disk_size_to_add)
-    else:
-        logger.info("All disks have sufficient space")
+        # Initialize service
+        try:
+            sos_monitor = initialize_service(cli_args)
+            logger.info("Service initialized for site: %s", sos_monitor.site.upper())
+        except Exception as error:
+            logger.critical("Failed to initialize service: %s", str(error), exc_info=True)
+            return 1
 
-    # save disk usages to csv file
-    csv_file = Path(sosMonitor.data_path, f"{sosMonitor.site.upper()}_disk_usages.csv")
-    write_to_csv_file(csv_file, all_disks)
+        # Check web service status
+        try:
+            if not check_web_status(sos_monitor.web_url):
+                logger.error("Web service check failed for %s", sos_monitor.web_url)
+                return 1
+            logger.debug("Web service is responsive")
+        except Exception as error:
+            logger.error("Error checking web service status: %s", str(error))
+            return 1
 
+        # Refresh disk data if needed
+        try:
+            if cli_args.disk_refresh or not sos_monitor.data_file.exists():
+                logger.info("Refreshing disk data file")
+                prepare_data_file(sos_monitor.data_file)
+                logger.debug("Disk data file refreshed at %s", sos_monitor.data_file)
+        except Exception as error:
+            logger.error("Failed to prepare disk data file: %s", str(error))
+            return 1
 
-    if messages := read_log_for_errors(sosMonitor.log_file):
-        subject = f"Cliosoft Alert: {sosMonitor.site.upper()} disk monitoring failed"
-        send_notification(subject, messages)
-        rotate_log_file(sosMonitor.log_file)
+        # Check disk space
+        try:
+            disk_data = sos_monitor.data_file.read_text(encoding='utf-8').strip()
+            if not disk_data:
+                logger.error("Disk data file is empty")
+                return 1
+
+            disks = disk_data.splitlines()
+            all_disks, low_space_disks = disk_space_info(disks, LOW_SPACE_THRESHOLD_GB)
+
+            if low_space_disks:
+                disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.add_size else 0
+                logger.warning("Low disk space detected on %d volumes", len(low_space_disks))
+                handle_low_disk_space(low_space_disks, disk_size_to_add)
+            else:
+                logger.info("All disks have sufficient space")
+
+            # Save disk usage to CSV
+            csv_file = Path(sos_monitor.data_path, f"{sos_monitor.site.upper()}_disk_usages.csv")
+            write_to_csv_file(csv_file, all_disks)
+            logger.debug("Disk usage report saved to %s", csv_file)
+
+        except Exception as error:
+            logger.error("Error processing disk information: %s", str(error), exc_info=True)
+            return 1
+
+        # Check for errors in log and notify if needed
+        if error_messages := read_log_for_errors(sos_monitor.log_file):
+            subject = f"Cliosoft Alert: {sos_monitor.site.upper()} disk monitoring issues detected"
+            try:
+                send_notification(subject, error_messages)
+                rotate_log_file(sos_monitor.log_file)
+                logger.warning("Sent notification for detected errors")
+            except Exception as error:
+                logger.error("Failed to send notification: %s", str(error))
+                return 1
+            return 1
+
+        logger.info("%s disk space monitoring completed successfully", sos_monitor.site.upper())
+        return 0
+
+    except Exception as Error:
+        logger.critical("Unexpected error in main(): %s", str(Error), exc_info=True)
         return 1
-
-    logger.info("%s disk space monitoring completed successfully", sosMonitor.site.upper())
-    return 0
 
 
 #-----  Main   -----
@@ -521,11 +615,19 @@ if __name__ == '__main__':
     logger = setup_logging()
 
     try:
-        # sys.exit(main())
-        main()
+        # Run main application
+        sys.exit(main())
+    except Exception as e:
+        logger.error("Fatal error in main execution: %s", str(e), exc_info=True)
+        sys.exit(1)
     finally:
-        # Clean up lock file
-        if 'lock_fd' in locals():
-            os.close(lock_fd)
-            os.unlink(LOCK_FILE)
+        # Cleanup resources
+        if lock_fd is not None:
+            try:
+                os.close(lock_fd)
+                os.unlink(LOCK_FILE)
+            except OSError as e:
+                if logger:
+                    logger.warning("Failed to clean up lock file: %s", str(e))
+
         logging.shutdown()
