@@ -26,7 +26,7 @@ COMMAND_TIMEOUT = 30  # seconds
 DDM_CONTACTS = ['linh.a.nguyen@intel.com']
 SENDER = "linh.a.nguyen@intel.com"
 EXCLUDED_SERVICES_FILE = Path('/opt/cliosoft/monitoring/data/excluded_services.txt')
-SITES = ['sc','sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'altera_png', 'vr'] # noqa, ignore=E501
+# SITES = ['sc','sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'altera_png', 'vr'] # noqa, ignore=E501
 DISK_SIZE_INCREASE_DAYS = 2  # Days to check for recent disk size increases
 
 #----
@@ -89,7 +89,7 @@ class SosDiskMonitor:
 
             # Log relevant debug information
             log_vars = [
-                ("Disk data file", self.DATA_FILE),
+                ("Disk data file", self.data_file),
                 ("SOS_SERVERS_DIR", os.environ['SOS_SERVERS_DIR']),
                 ("CLIOSOFT_DIR", os.environ['CLIOSOFT_DIR']),
                 ("SOS_SERVER_ROLE", os.environ['SOS_SERVER_ROLE']),
