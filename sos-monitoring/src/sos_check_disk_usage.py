@@ -26,6 +26,7 @@ COMMAND_TIMEOUT = 30  # seconds
 DDM_CONTACTS = ['linh.a.nguyen@intel.com']
 SENDER = "linh.a.nguyen@intel.com"
 EXCLUDED_SERVICES_FILE = Path('/opt/cliosoft/monitoring/data/excluded_services.txt')
+
 # SITES = ['sc','sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'altera_png', 'vr'] # noqa, ignore=E501
 DISK_SIZE_INCREASE_DAYS = 2  # Days to check for recent disk size increases
 
@@ -69,19 +70,19 @@ class SosDiskMonitor:
         self.web_url = None
         self.site_name = None
         self.data_file = Path(SosDiskMonitor.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
-        self.env_data_file = Path(SosDiskMonitor.data_path, f'{self.site.upper()}_sos_env.json')
+        self.env_json_file = Path(SosDiskMonitor.data_path, f'{self.site.upper()}_sos_env.json')
         self.load_env_data()
 
     def load_env_data(self):
         """Load environment data from file or initialize new configuration."""
-        if self.env_data_file.exists():
-            self.load_from_env_data_file()
+        if self.env_json_file.exists():
+            self.load_env_vars_from_file()
         else:
             self.initialize_env_variables()
             self.save_env_data()
 
     @staticmethod
-    def logging_debug_decorator(func)-> Callable:
+    def logging_decorator(func)-> Callable:
         """ Decorate debug information to be logged"""
         @wraps(func)
         def wrapper(self, *args, **kwargs):
@@ -103,10 +104,10 @@ class SosDiskMonitor:
             return result
         return wrapper
 
-    @logging_debug_decorator
-    def load_from_env_data_file(self):
+    @logging_decorator
+    def load_env_vars_from_file(self):
         """ Load environment variables from JSON file """
-        data: Dict = self.read_from_env_data_file(self.env_data_file)
+        data: Dict = self.read_env_file(self.env_json_file)
         self.update_site_variables(data)
         self.update_env_variables(data)
 
@@ -127,7 +128,7 @@ class SosDiskMonitor:
             'EC_ZONE': data['ec_zone'],
         })
 
-    @logging_debug_decorator
+    @logging_decorator
     def initialize_env_variables(self):
         """Initialize SOS environment variables with default values"""
         os.environ['CLIOSOFT_DIR'] = '/opt/cliosoft/latest'
@@ -146,18 +147,18 @@ class SosDiskMonitor:
 
     def save_env_data(self):
         """Save environment variables to file"""
-        self.write_to_env_data_file(
+        self.save_env_vars_to_file(
             self.site_name, self.web_url,
             self.server_role, os.environ['SOS_SERVERS_DIR'],
             os.environ['CLIOSOFT_DIR'], os.environ['EC_ZONE'])
 
 
-    def write_to_env_data_file(self, *args):
+    def save_env_vars_to_file(self, *args):
         """Write environment data to JSON file"""
         SITE_INFO_KEYS = ['site_name', 'site_url', 'server_role', 'sos_servers_dir', 'sos_cliosoft_dir', 'ec_zone']
         data = dict(zip(SITE_INFO_KEYS, args[:6]))
         try:
-            with open(self.env_data_file, 'w', encoding='utf-8') as f:
+            with open(self.env_json_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4) # noqa, ignore=E501
         except (IOError, OSError) as file_error:
             logger.error("Failed to write environment data file: %s", file_error)
@@ -165,7 +166,7 @@ class SosDiskMonitor:
 
 
     @staticmethod
-    def read_from_env_data_file(file_path)-> Dict[str, str]:
+    def read_env_file(file_path)-> Dict[str, str]:
         """Load environment variables from JSON file"""
         try:
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -180,7 +181,7 @@ class SosDiskMonitor:
         """Retrieve site name and URL using sosmgr command."""
         cmd = f"{SOS_MGR_CMD} site get -o csv --url | tail -2 | sed -E '/^$|site,url/d'"
         # return run_sos_cmd_in_subproc(cmd, timeout=TIMEOUT, is_shell=True)
-        result = run_sos_cmd_in_subproc(cmd, timeout=COMMAND_TIMEOUT, is_shell=True)
+        result = run_shell_cmd(cmd, timeout=COMMAND_TIMEOUT, is_shell=True)
         if not result or len(result) < 2:
             raise ValueError("Failed to get site name and URL")
         return result[0], result[1]
@@ -195,7 +196,7 @@ class SosDiskMonitor:
         return SERVER_CONFIG_PATH
 
 
-def run_sos_cmd_in_subproc(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
+def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
     """
     Run a shell command and return its output as a list of strings.
     Args:
@@ -244,7 +245,7 @@ def get_sos_services() -> list[str]:
     """
     logger.info('Querying SOS services')
     sos_cmd = f"{SOS_ADMIN_CMD} list"
-    services = run_sos_cmd_in_subproc(sos_cmd, timeout=COMMAND_TIMEOUT)
+    services = run_shell_cmd(sos_cmd, timeout=COMMAND_TIMEOUT)
 
     if services is None:
         logger.error("No SOS services found")
@@ -282,7 +283,7 @@ def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
     }
 
     sos_get_disks_cmd = server_role_commands.get(server_role)
-    lines = run_sos_cmd_in_subproc(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
+    lines = run_shell_cmd(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
     if not lines:
         error_msg = "No SOS disks found"
         logger.error(error_msg)
@@ -295,22 +296,22 @@ def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
             yield disk_info
 
 
-def create_data_file_decorator(func: Callable) -> Callable:
+def create_file_decorator(func: Callable) -> Callable:
     """
     Decorator to handle data file creation with automatic refresh.
     Delete and re-create file if file is older than a day
     """
     @wraps(func)
     def wrapper(*args, **kwargs):
-        data_file = args[0]
+        ifile = args[0]
         try:
             # If file exists and is older than 1 day, remove it
-            if data_file.exists() and file_older_than(data_file, num_day=1):
+            if ifile.exists() and file_older_than(ifile, num_day=1):
                 logger.info('Data file is more than a day old. Removing old file...')
-                data_file.unlink()
+                ifile.unlink()
             
             # If file doesn't exist (either didn't exist or was just removed)
-            if not data_file.exists():
+            if not ifile.exists():
                 logger.info('Creating new data file...')
                 return func(*args, **kwargs)
             
@@ -318,23 +319,23 @@ def create_data_file_decorator(func: Callable) -> Callable:
             return None
             
         except OSError as file_error:
-            logger.error("Error handling data file %s: %s", data_file, file_error)
+            logger.error("Error handling data file %s: %s", ifile, file_error)
             raise
 
     return wrapper
 
 
-@create_data_file_decorator
-def create_data_file(data_file: Path) -> None:
+@create_file_decorator
+def create_disks_file(disk_file: Path) -> None:
     """
     Creates a data file containing paths of primary and cache disks for Cliosoft.
     This function retrieves disk information, filters it, and writes the relevant paths to the specified data file.
     Parameters:
-        data_file (Path): The path where the data file will be created.
+        disk_file (Path): The path where the data file will be created.
     Raises:
         OSError: If there is an error during file creation or writing.
     """
-    logger.info('Creating data file at %s', data_file)
+    logger.info('Creating disk file at %s', disk_file)
     found_disks: set[Path] = set()
 
     def write_disk_path(disk_path: Path, seen_disks: set[Path], file_handle: TextIO) -> None:
@@ -346,7 +347,7 @@ def create_data_file(data_file: Path) -> None:
     sos_services = get_sos_services()
 
     try:
-        with open(data_file, 'w', newline='', encoding='utf-8') as file:
+        with open(disk_file, 'w', newline='', encoding='utf-8') as file:
             for row in get_sos_disks(sos_services):
                 if len(row) > 5:   # Replica server format
                     replica_dir = get_parent_dir(Path(row[-1]))
@@ -362,7 +363,7 @@ def create_data_file(data_file: Path) -> None:
 
         # Normalize the paths in the data file
         subprocess.run(
-            ["sed", "-i", "s:^/nfs/.*/disks:/nfs/site/disks:g", str(data_file)],
+            ["sed", "-i", "s:^/nfs/.*/disks:/nfs/site/disks:g", str(disk_file)],
             check=True
         )
 
@@ -467,49 +468,11 @@ def initialize_service(cli_args)-> SosDiskMonitor:
     else:
         return SosDiskMonitor(site_code())
 
-def prepare_data_file(file: Path)-> None:
+def prepare_disks_file(file: Path)-> None:
     """Refresh data file"""
     file.unlink(missing_ok=True)
-    create_data_file(file)
+    create_disks_file(file)
 
-
-# def main() -> None|int:
-#     """Main function"""
-#     cli_args = process_command_line()
-#
-#     # Initialize object
-#     sosMonitor= initialize_service(cli_args)
-#
-#     # check sosmgr web service response
-#     check_web_status(sosMonitor.web_url)
-#
-#     # # Refresh disk data file if needed
-#     if cli_args.disk_refresh or not sosMonitor.data_file.exists():
-#         prepare_data_file(sosMonitor.data_file)
-#
-#     # check disk space and optionally increase disk size
-#     _disks = sosMonitor.data_file.read_text(encoding='utf-8').strip().splitlines()
-#     all_disks, low_space_disks = disk_space_info(_disks, LOW_SPACE_THRESHOLD_GB)
-#
-#     if low_space_disks:
-#         disk_size_to_add = ADDING_DISK_SIZE_GB if cli_args.add_size else 0
-#         handle_low_disk_space(low_space_disks, disk_size_to_add)
-#     else:
-#         logger.info("All disks have sufficient space")
-#
-#     # save disk usages to csv file
-#     csv_file = Path(sosMonitor.data_path, f"{sosMonitor.site.upper()}_disk_usages.csv")
-#     write_to_csv_file(csv_file, all_disks)
-#
-#
-#     if messages := read_log_for_errors(sosMonitor.log_file):
-#         subject = f"Cliosoft Alert: {sosMonitor.site.upper()} disk monitoring failed"
-#         send_notification(subject, messages)
-#         rotate_log_file(sosMonitor.log_file)
-#         return 1
-#
-#     logger.info("%s disk space monitoring completed successfully", sosMonitor.site.upper())
-#     return 0
 
 def main() -> int:
     """
@@ -555,7 +518,7 @@ def main() -> int:
         try:
             if cli_args.disk_refresh or not sos_monitor.data_file.exists():
                 logger.info("Refreshing disk data file")
-                prepare_data_file(sos_monitor.data_file)
+                prepare_disks_file(sos_monitor.data_file)
                 logger.debug("Disk data file refreshed at %s", sos_monitor.data_file)
         except Exception as error:
             logger.error("Failed to prepare disk data file: %s", str(error))

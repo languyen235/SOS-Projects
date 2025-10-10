@@ -194,13 +194,6 @@ def rotate_log_file(filename: str | os.PathLike)-> None:
     if oldest.exists():
         oldest.unlink()
 
-    # Shift existing logs
-    # if os.path.exists(filename):
-    #     for i in reversed(range(1, max_backup_count)):
-    #         rotated_filename = f"{filename}.{i}"
-    #         if os.path.isfile(rotated_filename):
-    #             os.rename(rotated_filename, f"{filename}.{i + 1}")
-
     # Shift existing backups
     for i in reversed(range(1, max_backup_count)):
         src = path.with_name(f"{path.name}.{i}")
