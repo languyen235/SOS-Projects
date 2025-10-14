@@ -125,7 +125,7 @@ def report_disk_size(disk: str):
     return [x // (2**30) for x in shutil.disk_usage(disk)]
 
 
-def get_excluded_services(excluded_service_file: str | os.PathLike) -> List[str]:
+def get_excluded_services(excluded_service_file: Path) -> List[str]:
     """Read file for excluded services and return list of service names"""
     excluded_services = [line.strip() for line in open(excluded_service_file, 'r', encoding='utf-8')
                          if line.strip() and not line.startswith('#')]
@@ -155,12 +155,15 @@ def send_email(subject: str, body: str | List [str], receiver: str | List [str],
 
 
 def sosmgr_web_status(url)-> Tuple[str, int | str]:
-    """Check sosmgr status. Credited to Intel IGPT"""
+    """Check sosmgr status. Credited to Intel iGPT"""
     import requests # type: ignore
     timeout = 5
     try:
         response = requests.get(url, timeout=timeout)
         logger.debug("The sosmgr check returned code: %s", response.status_code)
+        if response.status_code != 200:
+            return 'Failure', response.status_code
+
         return 'Success', response.status_code
     except requests.exceptions.Timeout:
         # Handle timeout exception
@@ -172,7 +175,7 @@ def sosmgr_web_status(url)-> Tuple[str, int | str]:
         return 'Failure', 1
 
 
-def read_log_for_errors(log_file: str | os.PathLike)-> List[str]:
+def read_log_for_errors(log_file: Path)-> List[str]:
     """Parse messages from log file"""
     messages = []
     with open(log_file, 'r', encoding='utf-8') as file:
@@ -202,27 +205,35 @@ def rotate_log_file(filename: str | os.PathLike)-> None:
             src.rename(dst)
 
     # Copy current log to .1
-    # shutil.copy2(filename, f"{filename}.1")  # copy2 preserves date creation time
-    shutil.copy2(path, path.with_name(f"{path.name}.1"))
+    shutil.copy2(path, path.with_name(f"{path.name}.1")) # copy2 preserves date creation time
 
 
-def get_parent_dir(disk_path: Path) -> Path:
-    """Get a disk path that relatives to SQL (pg_data) folder"""
+def get_pg_data_parent(disk_path: Path, depth: int = 5) -> Path:
+    """
+    Returns the parent directory of the 'pg_data' folder located under the given disk path.
+
+    Args:
+        disk_path (Path): Base path to the disk.
+        depth (int): Number of levels up from 'pg_data' to retrieve the parent directory.
+    Raises:
+        FileNotFoundError: If the disk path does not exist.
+        ValueError: If the path is too shallow to reach the desired parent.
+    Returns:
+        Path: The parent directory at the specified depth.
+    """
     if not disk_path.exists():
-        raise FileNotFoundError(f"Disk path {disk_path} does not exist")
+        raise FileNotFoundError(f"Disk path '{disk_path}' does not exist.")
 
-    path = disk_path / 'pg_data'
-    disk_name_level = 5  #  5 elements: ('/', 'nfs', 'site', 'disks', 'hipipde_soscache_013')
-    level = len(path.parents) - disk_name_level
-
-    if level < 0:
-        # raise ValueError(f"Path is too shallow to get parent level: {path}")
+    pg_data_path = disk_path / 'pg_data'
+    parents = pg_data_path.parents
+    level = len(parents) - depth
+    if len(parents) < depth:
         raise ValueError(
-            f"Path '{path}' is too shallow (has {len(path.parents)} levels) "
-            f"to get parent at level {disk_name_level}"
+            f"Path '{pg_data_path}' is too shallow (has {len(parents)} levels) "
+            f"to retrieve parent at depth {depth}."
         )
 
-    return path.parents[level]
+    return parents[level]
 
 
 def write_to_csv_file(csv_file, data: Tuple[str]) -> None:
@@ -255,6 +266,6 @@ def site_code():
 
 __all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
-            'read_log_for_errors', 'rotate_log_file', 'get_parent_dir', 'write_to_csv_file',
-            'disk_space_info', 'site_code'
+            'read_log_for_errors', 'rotate_log_file', 'write_to_csv_file', 'disk_space_info',
+            'site_code', 'get_pg_data_parent'
             ]

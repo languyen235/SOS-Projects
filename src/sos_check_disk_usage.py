@@ -12,65 +12,22 @@ from typing import List, Iterator, Tuple, TextIO, Dict, Callable
 import os, sys
 
 # Add the parent directory to modules
-sys.path.append('/opt/cliosoft/monitoring')
+# sys.path.append('/opt/cliosoft/monitoring')
+
 from modules.utils import *
-
-# Constants
-LOW_SPACE_THRESHOLD_GB: int = 250  # GBthreshold for low disk size
-ADDING_DISK_SIZE_GB: int = 500  # GB value to be add to current disk size
-SERVER_CONFIG_LINK = '/opt/cliosoft/latest/SERVERS'
-SERVER_CONFIG_PATH = '/nfs/site/disks/sos_adm/share/SERVERS7'
-SOS_ADMIN_CMD = "/opt/cliosoft/latest/bin/sosadmin"
-SOS_MGR_CMD = "/opt/cliosoft/latest/bin/sosmgr"
-COMMAND_TIMEOUT = 30  # seconds
-DDM_CONTACTS = ['linh.a.nguyen@intel.com']
-SENDER = "linh.a.nguyen@intel.com"
-EXCLUDED_SERVICES_FILE = Path('/opt/cliosoft/monitoring/data/excluded_services.txt')
-
-# SITES = ['sc','sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'altera_png', 'vr'] # noqa, ignore=E501
-DISK_SIZE_INCREASE_DAYS = 2  # Days to check for recent disk size increases
-
-#----
-def setup_logging() -> logging.Logger:
-    """Configure and return a logger instance.
-    Returns:
-        logging.Logger: Configured logger instance
-    """
-    log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-    log_format = '[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s'
-
-    logging.basicConfig(
-        level=log_level,
-        format=log_format,
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(SosDiskMonitor.log_file, mode='w'),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
-
+from config.settings import *
+from utils.helpers import *
 
 class SosDiskMonitor:
     """Setup Cliosoft application service"""
-
-    # Class variables
-    data_path = Path('/opt/cliosoft/monitoring/data')
-    log_path = Path('/opt/cliosoft/monitoring/logs')
-    log_file = Path(log_path, 'sos_service_monitoring.log')
-
-    # Ensure required directories exist
-    for path in [data_path, log_path]:
-        path.mkdir(mode=0o775, parents=True, exist_ok=True)
-
     def __init__(self, site):
         """Initialize instance attributes and load environment data."""
         self.site = site
         self.server_role = None
         self.web_url = None
         self.site_name = None
-        self.data_file = Path(SosDiskMonitor.data_path, f"{self.site.upper()}_cliosoft_disks.txt")
-        self.env_json_file = Path(SosDiskMonitor.data_path, f'{self.site.upper()}_sos_env.json')
+        self.data_file = DATA_DIR / f"{self.site.upper()}_cliosoft_disks.txt"
+        self.env_json_file = DATA_DIR / f'{self.site.upper()}_sos_env.json'
         self.load_env_data()
 
     def load_env_data(self):
@@ -350,15 +307,15 @@ def create_disks_file(disk_file: Path) -> None:
         with open(disk_file, 'w', newline='', encoding='utf-8') as file:
             for row in get_sos_disks(sos_services):
                 if len(row) > 5:   # Replica server format
-                    replica_dir = get_parent_dir(Path(row[-1]))
+                    replica_dir = get_pg_data_parent(replica_dir, depth=5)
                     write_disk_path(replica_dir, found_disks, file)
                     continue
 
                 if  row[-2].lower() == 'local':
-                    repo_dir = get_parent_dir(Path(row[-1]))
+                    repo_dir = get_pg_data_parent(Path(row[-1]), depth=5)
                     write_disk_path(repo_dir, found_disks, file)
 
-                cache_dir = get_parent_dir(Path(row[-3]))
+                cache_dir = get_pg_data_parent(Path(row[-3]), depth=5)
                 write_disk_path(cache_dir, found_disks, file)
 
         # Normalize the paths in the data file
@@ -409,7 +366,7 @@ def check_web_status(web_url: str) -> bool:
     return True
 
 
-def send_notification(subject: str, message: list[str]) -> bool:
+def send_email_alert(subject: str, message: list[str]) -> bool:
     """
     Send email notification to DDM contacts.
     Args:
@@ -422,7 +379,7 @@ def send_notification(subject: str, message: list[str]) -> bool:
         send_email(subject, message, DDM_CONTACTS, SENDER)
         return True
     except Exception as error:
-        logger.error("Failed to send email notification: %s", error)
+        logger.error("Failed to send email: %s", error)
         return False
 
 
@@ -542,7 +499,8 @@ def main() -> int:
                 logger.info("All disks have sufficient space")
 
             # Save disk usage to CSV
-            csv_file = Path(sos_monitor.data_path, f"{sos_monitor.site.upper()}_disk_usages.csv")
+            # csv_file = Path(sos_monitor.data_path, f"{sos_monitor.site.upper()}_disk_usages.csv")
+            csv_file = DATA_DIR / f"{sos_monitor.site.upper()}_disk_usages.csv"
             write_to_csv_file(csv_file, all_disks)
             logger.debug("Disk usage report saved to %s", csv_file)
 
@@ -551,11 +509,13 @@ def main() -> int:
             return 1
 
         # Check for errors in log and notify if needed
-        if error_messages := read_log_for_errors(sos_monitor.log_file):
-            subject = f"Cliosoft Alert: {sos_monitor.site.upper()} disk monitoring issues detected"
+        # if error_messages := read_log_for_errors(sos_monitor.log_file):
+        if error_messages := read_log_for_errors(LOG_FILE):
+            subject = f"Cliosoft Alert: {sos_monitor.site.upper()} disk monitoring detected issues"
             try:
-                send_notification(subject, error_messages)
-                rotate_log_file(sos_monitor.log_file)
+                send_email_alert(subject, error_messages)
+                # rotate_log_file(sos_monitor.log_file)
+                rotate_log_file(LOG_FILE)
                 logger.warning("Sent notification for detected errors")
             except Exception as error:
                 logger.error("Failed to send notification: %s", str(error))
@@ -575,7 +535,7 @@ if __name__ == '__main__':
     # Set up file locking to prevent multiple instances
     LOCK_FILE = "/tmp/sos_check_disks.lock"
     lock_fd = lock_script(LOCK_FILE) # Acquire the lock
-    logger = setup_logging()
+    logger = setup_logging(LOG_FILE)
 
     try:
         # Run main application
