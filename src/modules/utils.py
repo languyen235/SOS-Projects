@@ -1,14 +1,21 @@
 #!/opt/cliosoft/monitoring/venv/bin/python3.12
 
-import os, sys
+import sys
 import subprocess
-import re
-import time
 import shutil
+import shlex
 import socket
 import logging
+import json
+import argparse
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Tuple, Dict, Iterator
+
+# Add the parent directory to modules
+sys.path.append('/opt/cliosoft/monitoring')
+
+from src.config.settings import *
+
 
 logger = logging.getLogger(__name__)
 
@@ -32,15 +39,15 @@ def lock_script(lock_file: str):
         logger.warning("Another instance of the script is already running.")
         sys.exit(1)
 
-def file_older_than(file_path: str | os.PathLike, num_day: int=1):
-    """Return true if file is older than number of days"""
-    time_difference = time.time() - os.path.getmtime(file_path)
-    seconds_in_a_day = 86400  # 24 * 60 * 60
-
-    if time_difference > (seconds_in_a_day * num_day):
-        return True
-    else:
-        return False
+# def file_older_than(file_path: str | os.PathLike, num_day: int=1):
+#     """Return true if file is older than number of days"""
+#     time_difference = time.time() - os.path.getmtime(file_path)
+#     seconds_in_a_day = 86400  # 24 * 60 * 60
+#
+#     if time_difference > (seconds_in_a_day * num_day):
+#         return True
+#     else:
+#         return False
 
 
 def increase_disk_size(disk_name: str, adding_size: int) -> bool:
@@ -211,7 +218,6 @@ def rotate_log_file(filename: str | os.PathLike)-> None:
 def get_pg_data_parent(disk_path: Path, depth: int = 5) -> Path:
     """
     Returns the parent directory of the 'pg_data' folder located under the given disk path.
-
     Args:
         disk_path (Path): Base path to the disk.
         depth (int): Number of levels up from 'pg_data' to retrieve the parent directory.
@@ -260,12 +266,175 @@ def disk_space_info(disks:list[str], size_threshold: int)-> Tuple[Tuple[str], Tu
 
     return tuple(all_disks), tuple(low_space_disks)
 
+
 def site_code():
     """Returns this site code"""
     return socket.getfqdn().split('.')[1]
 
-__all__ = [ 'lock_script', 'file_older_than', 'increase_disk_size', 'has_disk_size_been_increased',
+
+def read_env_file(file_path)-> Dict[str, str]:
+    """Load environment variables from JSON file"""
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except (IOError, json.JSONDecodeError) as file_error:
+        logger.error("Failed to read environment data file: %s", file_error)
+        raise
+
+def get_server_config_path(site)-> str:
+    """Determine the appropriate server configuration path."""
+    real_path = os.path.realpath(SERVER_CONFIG_LINK)
+    if re.search(r'(replica)', real_path) or site != 'sc':
+        return real_path
+    return SERVER_CONFIG_PATH
+
+def get_sitename_and_url()-> tuple[str, str]:
+    """Retrieve site name and URL using sosmgr command."""
+    cmd = f"{SOS_MGR_CMD} site get -o csv --url | tail -2 | sed -E '/^$|site,url/d'"
+    # return run_sos_cmd_in_subproc(cmd, timeout=TIMEOUT, is_shell=True)
+    result = run_shell_cmd(cmd, timeout=COMMAND_TIMEOUT, is_shell=True)
+    if not result or len(result) < 2:
+        raise ValueError("Failed to get site name and URL")
+    return result[0], result[1]
+
+
+def get_sos_services() -> list[str]:
+    """
+    Get list of SOS services, excluding any that are in the excluded services file.
+    Returns:
+        List of service names
+    Raises:
+        ValueError: If no SOS services are found
+    """
+    logger.info('Querying SOS services')
+    sos_cmd = f"{SOS_ADMIN_CMD} list"
+    services = run_shell_cmd(sos_cmd, timeout=COMMAND_TIMEOUT)
+
+    if services is None:
+        logger.error("No SOS services found")
+        raise ValueError('No SOS services found')
+
+    if EXCLUDED_SERVICES_FILE.exists():
+        excluded_services = get_excluded_services(EXCLUDED_SERVICES_FILE)
+        return [service for service in services if service not in excluded_services]
+
+    return services
+
+
+def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
+    """
+    Get disk information for SOS services.
+    Args:
+        services: List of service names to query
+    Yields:
+        Lists containing disk information for each service
+    Raises:
+        ValueError: If no SOS disks are found or server role is unknown
+    """
+    logger.debug('Services: %s', services)
+    logger.info('Querying SOS disks for %d services', len(services))
+
+    server_role = os.environ['SOS_SERVER_ROLE']
+    if server_role not in ['replica', 'repo']:
+        logger.error("Unknown server role: %s", server_role)
+        raise ValueError(f'Unknown server role:  {server_role}')
+
+    # Define commands based on server role
+    server_role_commands = {
+        'replica': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -rpa -pcl -rcl -s {','.join(services)}",
+        'repo': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -pcl -s {','.join(services)}",
+    }
+
+    sos_get_disks_cmd = server_role_commands.get(server_role)
+    lines = run_shell_cmd(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
+    if not lines:
+        error_msg = "No SOS disks found"
+        logger.error(error_msg)
+        raise ValueError(error_msg)
+
+    for line in filter(None, map(str.strip, lines)):  # Skip empty lines
+        if not line.startswith('site'):  # Skip headers
+            disk_info = [text.strip() for text in line.split(',')]
+            logger.debug("Parsed SOS disk: %s", disk_info)
+            yield disk_info
+
+
+def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
+    """
+    Run a shell command and return its output as a list of strings.
+    Args:
+        cmd: The command to run
+        timeout: Command timeout in seconds
+        is_shell: Whether to run the command through the shell
+
+    Returns:
+        List of output lines or None if command failed
+    """
+    try:
+        result = subprocess.run(
+            cmd if is_shell else shlex.split(cmd),
+            shell=is_shell,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=timeout,
+            check=True
+        )
+
+        if result.stderr:
+            # logger.error(f"Command [{cmd}] failed: {result.stderr}")
+            logger.error("Command [%s] failed: %s", cmd, result.stderr)
+            return None
+
+        delimiter = ',' if result.stdout.count(',') == 1 else '\n'
+        return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
+
+    except subprocess.TimeoutExpired:
+        logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
+    except subprocess.CalledProcessError as proc_error:
+        logger.critical("Command [%s] failed with status %d: %s",
+                       cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
+
+    return None
+
+
+def process_command_line()-> argparse.Namespace:
+    """
+    Parse and validate command line arguments.
+    Returns:
+        Parsed command line arguments
+    """
+    parser = argparse.ArgumentParser(
+        description="""Script for monitoring Cliosoft disks and server performance.
+        1. Check sosmgr web service status
+        2. Check for too many sosmgr processes that may affect server performance
+        3. Check low disk space and optionally increase disk size
+        4. Generate email notifications for low disk space and recent disk size increases
+        """,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+        Options:
+        -dr | --disk-refresh    Refresh the disk file manually. 
+                                (Default: automatically refreshes every 24 hours)
+        -as | --add-size        Enable automation for adding disk space
+        -tm | --test-mode       Flag that the script is running on a test server.
+
+        Logging control (set in environment):
+        - tcsh: setenv LOG_LEVEL DEBUG
+        - bash: export LOG_LEVEL=DEBUG
+        - cron: LOG_LEVEL=DEBUG && python3 sos_check_disk_usage.py [args]
+        """
+    )
+    parser.add_argument("-dr", "--disk-refresh", action="store_true", help='Refresh data file manually')
+    parser.add_argument("-as", "--add-size", action="store_true", help='Enable increasing disk size')
+    parser.add_argument("-tm", "--test-mode", action="store_true", help='Indicate running on test server')
+    logger.debug('Command line arguments: %s', parser.parse_args())
+    return parser.parse_args()
+
+__all__ = [ 'lock_script', 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
             'read_log_for_errors', 'rotate_log_file', 'write_to_csv_file', 'disk_space_info',
-            'site_code', 'get_pg_data_parent'
+            'site_code', 'get_pg_data_parent', 'read_env_file', 'get_server_config_path',
+            'get_sitename_and_url', 'get_sos_services', 'get_sos_disks', 'run_shell_cmd',
+            'process_command_line'
             ]

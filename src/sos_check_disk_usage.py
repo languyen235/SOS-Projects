@@ -2,17 +2,12 @@
 
 import json
 import logging
-import re
-import shlex
-import subprocess
-import argparse
 from functools import wraps
-from pathlib import Path
-from typing import List, Iterator, Tuple, TextIO, Dict, Callable
-import os, sys
+from typing import Tuple, Dict, Callable
+import sys
 
 # Add the parent directory to modules
-# sys.path.append('/opt/cliosoft/monitoring')
+sys.path.append('/opt/cliosoft/monitoring')
 
 from modules.utils import *
 from config.settings import *
@@ -64,7 +59,8 @@ class SosDiskMonitor:
     @logging_decorator
     def load_env_vars_from_file(self):
         """ Load environment variables from JSON file """
-        data: Dict = self.read_env_file(self.env_json_file)
+        # data: Dict = self.read_env_file(self.env_json_file)
+        data: Dict = read_env_file(self.env_json_file)
         self.update_site_variables(data)
         self.update_env_variables(data)
 
@@ -89,7 +85,8 @@ class SosDiskMonitor:
     def initialize_env_variables(self):
         """Initialize SOS environment variables with default values"""
         os.environ['CLIOSOFT_DIR'] = '/opt/cliosoft/latest'
-        os.environ['SOS_SERVERS_DIR'] = SosDiskMonitor.get_server_config_path(self.site)
+        # os.environ['SOS_SERVERS_DIR'] = SosDiskMonitor.get_server_config_path(self.site)
+        os.environ['SOS_SERVERS_DIR'] = get_server_config_path(self.site)
         os.environ['EC_ZONE'] = self.site
 
         # Determine server role based on servers directory
@@ -99,7 +96,8 @@ class SosDiskMonitor:
             os.environ['SOS_SERVER_ROLE'] = 'repo'
 
         self.server_role = os.environ['SOS_SERVER_ROLE']
-        self.site_name, self.web_url = SosDiskMonitor.get_sitename_and_url()
+        # self.site_name, self.web_url = SosDiskMonitor.get_sitename_and_url()
+        self.site_name, self.web_url = get_sitename_and_url()
 
 
     def save_env_data(self):
@@ -121,212 +119,207 @@ class SosDiskMonitor:
             logger.error("Failed to write environment data file: %s", file_error)
             raise
 
-
-    @staticmethod
-    def read_env_file(file_path)-> Dict[str, str]:
-        """Load environment variables from JSON file"""
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except (IOError, json.JSONDecodeError) as file_error:
-            logger.error("Failed to read environment data file: %s", file_error)
-            raise
-
-
-    @staticmethod
-    def get_sitename_and_url()-> tuple[str, str]:
-        """Retrieve site name and URL using sosmgr command."""
-        cmd = f"{SOS_MGR_CMD} site get -o csv --url | tail -2 | sed -E '/^$|site,url/d'"
-        # return run_sos_cmd_in_subproc(cmd, timeout=TIMEOUT, is_shell=True)
-        result = run_shell_cmd(cmd, timeout=COMMAND_TIMEOUT, is_shell=True)
-        if not result or len(result) < 2:
-            raise ValueError("Failed to get site name and URL")
-        return result[0], result[1]
+# ----- functions -----
+# def read_env_file(file_path)-> Dict[str, str]:
+#     """Load environment variables from JSON file"""
+#     try:
+#         with open(file_path, 'r', encoding='utf-8') as f:
+#             return json.load(f)
+#     except (IOError, json.JSONDecodeError) as file_error:
+#         logger.error("Failed to read environment data file: %s", file_error)
+#         raise
 
 
-    @staticmethod
-    def get_server_config_path(site)-> str:
-        """Determine the appropriate server configuration path."""
-        real_path = os.path.realpath(SERVER_CONFIG_LINK)
-        if re.search(r'(SERVERS8-replica$)', real_path) or site != 'sc':
-            return real_path
-        return SERVER_CONFIG_PATH
+# def get_sitename_and_url()-> tuple[str, str]:
+#     """Retrieve site name and URL using sosmgr command."""
+#     cmd = f"{SOS_MGR_CMD} site get -o csv --url | tail -2 | sed -E '/^$|site,url/d'"
+#     # return run_sos_cmd_in_subproc(cmd, timeout=TIMEOUT, is_shell=True)
+#     result = run_shell_cmd(cmd, timeout=COMMAND_TIMEOUT, is_shell=True)
+#     if not result or len(result) < 2:
+#         raise ValueError("Failed to get site name and URL")
+#     return result[0], result[1]
 
 
-def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
-    """
-    Run a shell command and return its output as a list of strings.
-    Args:
-        cmd: The command to run
-        timeout: Command timeout in seconds
-        is_shell: Whether to run the command through the shell
-
-    Returns:
-        List of output lines or None if command failed
-    """
-    try:
-        result = subprocess.run(
-            cmd if is_shell else shlex.split(cmd),
-            shell=is_shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=True
-        )
-
-        if result.stderr:
-            # logger.error(f"Command [{cmd}] failed: {result.stderr}")
-            logger.error("Command [%s] failed: %s", cmd, result.stderr)
-            return None
-
-        delimiter = ',' if result.stdout.count(',') == 1 else '\n'
-        return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
-
-    except subprocess.TimeoutExpired:
-        logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
-    except subprocess.CalledProcessError as proc_error:
-        logger.critical("Command [%s] failed with status %d: %s",
-                       cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
-
-    return None
+# def get_server_config_path(site)-> str:
+#     """Determine the appropriate server configuration path."""
+#     real_path = os.path.realpath(SERVER_CONFIG_LINK)
+#     if re.search(r'(replica)', real_path) or site != 'sc':
+#         return real_path
+#     return SERVER_CONFIG_PATH
 
 
-def get_sos_services() -> list[str]:
-    """
-    Get list of SOS services, excluding any that are in the excluded services file.
-    Returns:
-        List of service names
-    Raises:
-        ValueError: If no SOS services are found
-    """
-    logger.info('Querying SOS services')
-    sos_cmd = f"{SOS_ADMIN_CMD} list"
-    services = run_shell_cmd(sos_cmd, timeout=COMMAND_TIMEOUT)
-
-    if services is None:
-        logger.error("No SOS services found")
-        raise ValueError('No SOS services found')
-
-    if EXCLUDED_SERVICES_FILE.exists():
-        excluded_services = get_excluded_services(EXCLUDED_SERVICES_FILE)
-        return [service for service in services if service not in excluded_services]
-
-    return services
-
-
-def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
-    """
-    Get disk information for SOS services.
-    Args:
-        services: List of service names to query
-    Yields:
-        Lists containing disk information for each service
-    Raises:
-        ValueError: If no SOS disks are found or server role is unknown
-    """
-    logger.debug('Services: %s', services)
-    logger.info('Querying SOS disks for %d services', len(services))
-
-    server_role = os.environ['SOS_SERVER_ROLE']
-    if server_role not in ['replica', 'repo']:
-        logger.error("Unknown server role: %s", server_role)
-        raise ValueError(f'Unknown server role:  {server_role}')
-
-    # Define commands based on server role
-    server_role_commands = {
-        'replica': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -rpa -pcl -rcl -s {','.join(services)}",
-        'repo': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -pcl -s {','.join(services)}",
-    }
-
-    sos_get_disks_cmd = server_role_commands.get(server_role)
-    lines = run_shell_cmd(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
-    if not lines:
-        error_msg = "No SOS disks found"
-        logger.error(error_msg)
-        raise ValueError(error_msg)
-
-    for line in filter(None, map(str.strip, lines)):  # Skip empty lines
-        if not line.startswith('site'):  # Skip headers
-            disk_info = [text.strip() for text in line.split(',')]
-            logger.debug("Parsed SOS disk: %s", disk_info)
-            yield disk_info
+# def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
+#     """
+#     Run a shell command and return its output as a list of strings.
+#     Args:
+#         cmd: The command to run
+#         timeout: Command timeout in seconds
+#         is_shell: Whether to run the command through the shell
+#
+#     Returns:
+#         List of output lines or None if command failed
+#     """
+#     try:
+#         result = subprocess.run(
+#             cmd if is_shell else shlex.split(cmd),
+#             shell=is_shell,
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             text=True,
+#             timeout=timeout,
+#             check=True
+#         )
+#
+#         if result.stderr:
+#             # logger.error(f"Command [{cmd}] failed: {result.stderr}")
+#             logger.error("Command [%s] failed: %s", cmd, result.stderr)
+#             return None
+#
+#         delimiter = ',' if result.stdout.count(',') == 1 else '\n'
+#         return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
+#
+#     except subprocess.TimeoutExpired:
+#         logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
+#     except subprocess.CalledProcessError as proc_error:
+#         logger.critical("Command [%s] failed with status %d: %s",
+#                        cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
+#
+#     return None
 
 
-def create_file_decorator(func: Callable) -> Callable:
-    """
-    Decorator to handle data file creation with automatic refresh.
-    Delete and re-create file if file is older than a day
-    """
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        ifile = args[0]
-        try:
-            # If file exists and is older than 1 day, remove it
-            if ifile.exists() and file_older_than(ifile, num_day=1):
-                logger.info('Data file is more than a day old. Removing old file...')
-                ifile.unlink()
-            
-            # If file doesn't exist (either didn't exist or was just removed)
-            if not ifile.exists():
-                logger.info('Creating new data file...')
-                return func(*args, **kwargs)
-            
-            logger.debug('Using existing data file (less than a day old)')
-            return None
-            
-        except OSError as file_error:
-            logger.error("Error handling data file %s: %s", ifile, file_error)
-            raise
+# def get_sos_services() -> list[str]:
+#     """
+#     Get list of SOS services, excluding any that are in the excluded services file.
+#     Returns:
+#         List of service names
+#     Raises:
+#         ValueError: If no SOS services are found
+#     """
+#     logger.info('Querying SOS services')
+#     sos_cmd = f"{SOS_ADMIN_CMD} list"
+#     services = run_shell_cmd(sos_cmd, timeout=COMMAND_TIMEOUT)
+#
+#     if services is None:
+#         logger.error("No SOS services found")
+#         raise ValueError('No SOS services found')
+#
+#     if EXCLUDED_SERVICES_FILE.exists():
+#         excluded_services = get_excluded_services(EXCLUDED_SERVICES_FILE)
+#         return [service for service in services if service not in excluded_services]
+#
+#     return services
 
-    return wrapper
+# def get_sos_disks(services: list[str]) -> Iterator[list[str]]:
+#     """
+#     Get disk information for SOS services.
+#     Args:
+#         services: List of service names to query
+#     Yields:
+#         Lists containing disk information for each service
+#     Raises:
+#         ValueError: If no SOS disks are found or server role is unknown
+#     """
+#     logger.debug('Services: %s', services)
+#     logger.info('Querying SOS disks for %d services', len(services))
+#
+#     server_role = os.environ['SOS_SERVER_ROLE']
+#     if server_role not in ['replica', 'repo']:
+#         logger.error("Unknown server role: %s", server_role)
+#         raise ValueError(f'Unknown server role:  {server_role}')
+#
+#     # Define commands based on server role
+#     server_role_commands = {
+#         'replica': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -rpa -pcl -rcl -s {','.join(services)}",
+#         'repo': f"{SOS_MGR_CMD} service get -o csv -cpa -ppa -pcl -s {','.join(services)}",
+#     }
+#
+#     sos_get_disks_cmd = server_role_commands.get(server_role)
+#     lines = run_shell_cmd(sos_get_disks_cmd, timeout=COMMAND_TIMEOUT)
+#     if not lines:
+#         error_msg = "No SOS disks found"
+#         logger.error(error_msg)
+#         raise ValueError(error_msg)
+#
+#     for line in filter(None, map(str.strip, lines)):  # Skip empty lines
+#         if not line.startswith('site'):  # Skip headers
+#             disk_info = [text.strip() for text in line.split(',')]
+#             logger.debug("Parsed SOS disk: %s", disk_info)
+#             yield disk_info
 
 
-@create_file_decorator
-def create_disks_file(disk_file: Path) -> None:
-    """
-    Creates a data file containing paths of primary and cache disks for Cliosoft.
-    This function retrieves disk information, filters it, and writes the relevant paths to the specified data file.
-    Parameters:
-        disk_file (Path): The path where the data file will be created.
-    Raises:
-        OSError: If there is an error during file creation or writing.
-    """
-    logger.info('Creating disk file at %s', disk_file)
-    found_disks: set[Path] = set()
+# def create_file_decorator(func: Callable) -> Callable:
+#     """
+#     Decorator to handle data file creation with automatic refresh.
+#     Delete and re-create file if file is older than a day
+#     """
+#     @wraps(func)
+#     def wrapper(*args, **kwargs):
+#         ifile = args[0]
+#         try:
+#             # If file exists and is older than 1 day, remove it
+#             if ifile.exists() and file_older_than(ifile, num_day=1):
+#                 logger.info('Data file is more than a day old. Removing old file...')
+#                 ifile.unlink()
+#
+#             # If file doesn't exist (either didn't exist or was just removed)
+#             if not ifile.exists():
+#                 logger.info('Creating new data file...')
+#                 return func(*args, **kwargs)
+#
+#             logger.debug('Using existing data file (less than a day old)')
+#             return None
+#
+#         except OSError as file_error:
+#             logger.error("Error handling data file %s: %s", ifile, file_error)
+#             raise
+#     return wrapper
 
-    def write_disk_path(disk_path: Path, seen_disks: set[Path], file_handle: TextIO) -> None:
-        """Helper function to write disk path if not already seen."""
-        if disk_path not in seen_disks:
-            seen_disks.add(disk_path)
-            file_handle.write(f"{disk_path}\n")
 
-    sos_services = get_sos_services()
-
-    try:
-        with open(disk_file, 'w', newline='', encoding='utf-8') as file:
-            for row in get_sos_disks(sos_services):
-                if len(row) > 5:   # Replica server format
-                    replica_dir = get_pg_data_parent(replica_dir, depth=5)
-                    write_disk_path(replica_dir, found_disks, file)
-                    continue
-
-                if  row[-2].lower() == 'local':
-                    repo_dir = get_pg_data_parent(Path(row[-1]), depth=5)
-                    write_disk_path(repo_dir, found_disks, file)
-
-                cache_dir = get_pg_data_parent(Path(row[-3]), depth=5)
-                write_disk_path(cache_dir, found_disks, file)
-
-        # Normalize the paths in the data file
-        subprocess.run(
-            ["sed", "-i", "s:^/nfs/.*/disks:/nfs/site/disks:g", str(disk_file)],
-            check=True
-        )
-
-    except OSError as err:
-        logger.error("Failed to create data file: %s", err)
-        raise
+# @create_file_decorator
+# def create_disks_file(disk_file: Path) -> None:
+#     """
+#     Creates a data file containing paths of primary and cache disks for Cliosoft.
+#     This function retrieves disk information, filters it, and writes the relevant paths to the specified data file.
+#     Parameters:
+#         disk_file (Path): The path where the data file will be created.
+#     Raises:
+#         OSError: If there is an error during file creation or writing.
+#     """
+#     logger.info('Creating disk file at %s', disk_file)
+#     found_disks: set[Path] = set()
+#
+#     def write_disk_path(disk_path: Path, seen_disks: set[Path], file_handle: TextIO) -> None:
+#         """Helper function to write disk path if not already seen."""
+#         if disk_path not in seen_disks:
+#             seen_disks.add(disk_path)
+#             file_handle.write(f"{disk_path}\n")
+#
+#     sos_services = get_sos_services()
+#
+#     try:
+#         with open(disk_file, 'w', newline='', encoding='utf-8') as file:
+#             for row in get_sos_disks(sos_services):
+#                 if len(row) > 5:   # Replica server format
+#                     replica_dir = get_pg_data_parent(replica_dir, depth=5)
+#                     write_disk_path(replica_dir, found_disks, file)
+#                     continue
+#
+#                 if  row[-2].lower() == 'local':
+#                     repo_dir = get_pg_data_parent(Path(row[-1]), depth=5)
+#                     write_disk_path(repo_dir, found_disks, file)
+#
+#                 cache_dir = get_pg_data_parent(Path(row[-3]), depth=5)
+#                 write_disk_path(cache_dir, found_disks, file)
+#
+#         # Normalize the paths in the data file
+#         subprocess.run(
+#             ["sed", "-i", "s:^/nfs/.*/disks:/nfs/site/disks:g", str(disk_file)],
+#             check=True
+#         )
+#
+#     except OSError as err:
+#         logger.error("Failed to create data file: %s", err)
+#         raise
 
 
 def handle_low_disk_space(disks: Tuple, adding_size: int) -> None:
@@ -366,55 +359,55 @@ def check_web_status(web_url: str) -> bool:
     return True
 
 
-def send_email_alert(subject: str, message: list[str]) -> bool:
-    """
-    Send email notification to DDM contacts.
-    Args:
-        subject: Email subject
-        message: Email body content
-    Returns:
-        bool: True if email was sent successfully, False otherwise
-    """
-    try:
-        send_email(subject, message, DDM_CONTACTS, SENDER)
-        return True
-    except Exception as error:
-        logger.error("Failed to send email: %s", error)
-        return False
+# def send_email_alert(subject: str, message: list[str]) -> bool:
+#     """
+#     Send email notification to DDM contacts.
+#     Args:
+#         subject: Email subject
+#         message: Email body content
+#     Returns:
+#         bool: True if email was sent successfully, False otherwise
+#     """
+#     try:
+#         send_email(subject, message, DDM_CONTACTS, SENDER)
+#         return True
+#     except Exception as error:
+#         logger.error("Failed to send email: %s", error)
+#         return False
 
 
-def process_command_line()-> argparse.Namespace:
-    """
-    Parse and validate command line arguments.
-    Returns:
-        Parsed command line arguments
-    """
-    parser = argparse.ArgumentParser(
-        description="""Script for monitoring Cliosoft disks and server performance.
-        1. Check sosmgr web service status
-        2. Check for too many sosmgr processes that may affect server performance
-        3. Check low disk space and optionally increase disk size
-        4. Generate email notifications for low disk space and recent disk size increases
-        """,
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-        Options:
-        -dr | --disk-refresh    Refresh the disk file manually. 
-                                (Default: automatically refreshes every 24 hours)
-        -as | --add-size        Enable automation for adding disk space
-        -tm | --test-mode       Flag that the script is running on a test server.
-
-        Logging control (set in environment):
-        - tcsh: setenv LOG_LEVEL DEBUG
-        - bash: export LOG_LEVEL=DEBUG
-        - cron: LOG_LEVEL=DEBUG && python3 sos_check_disk_usage.py [args]
-        """
-    )
-    parser.add_argument("-dr", "--disk-refresh", action="store_true", help='Refresh data file manually')
-    parser.add_argument("-as", "--add-size", action="store_true", help='Enable increasing disk size')
-    parser.add_argument("-tm", "--test-mode", action="store_true", help='Indicate running on test server')
-    logger.debug('Command line arguments: %s', parser.parse_args())
-    return parser.parse_args()
+# def process_command_line()-> argparse.Namespace:
+#     """
+#     Parse and validate command line arguments.
+#     Returns:
+#         Parsed command line arguments
+#     """
+#     parser = argparse.ArgumentParser(
+#         description="""Script for monitoring Cliosoft disks and server performance.
+#         1. Check sosmgr web service status
+#         2. Check for too many sosmgr processes that may affect server performance
+#         3. Check low disk space and optionally increase disk size
+#         4. Generate email notifications for low disk space and recent disk size increases
+#         """,
+#         formatter_class=argparse.RawDescriptionHelpFormatter,
+#         epilog="""
+#         Options:
+#         -dr | --disk-refresh    Refresh the disk file manually.
+#                                 (Default: automatically refreshes every 24 hours)
+#         -as | --add-size        Enable automation for adding disk space
+#         -tm | --test-mode       Flag that the script is running on a test server.
+#
+#         Logging control (set in environment):
+#         - tcsh: setenv LOG_LEVEL DEBUG
+#         - bash: export LOG_LEVEL=DEBUG
+#         - cron: LOG_LEVEL=DEBUG && python3 sos_check_disk_usage.py [args]
+#         """
+#     )
+#     parser.add_argument("-dr", "--disk-refresh", action="store_true", help='Refresh data file manually')
+#     parser.add_argument("-as", "--add-size", action="store_true", help='Enable increasing disk size')
+#     parser.add_argument("-tm", "--test-mode", action="store_true", help='Indicate running on test server')
+#     logger.debug('Command line arguments: %s', parser.parse_args())
+#     return parser.parse_args()
 
 
 def initialize_service(cli_args)-> SosDiskMonitor:
