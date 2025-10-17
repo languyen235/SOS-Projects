@@ -4,7 +4,6 @@ import sys
 import subprocess
 import shutil
 import shlex
-import socket
 import logging
 import json
 import argparse
@@ -15,39 +14,9 @@ from typing import List, Tuple, Dict, Iterator
 sys.path.append('/opt/cliosoft/monitoring')
 
 from src.config.settings import *
-
+from src.utils.helpers import *
 
 logger = logging.getLogger(__name__)
-
-def lock_script(lock_file: str):
-    """
-    Locks a file pertaining to this script so that it cannot be run simultaneously.
-
-    Since the lock is automatically released when this script ends, there is no
-    need for an unlock function for this use case.
-
-    Returns:
-        lockfile if lock was acquired. Otherwise, print error and exists.
-    """
-    import fcntl
-    try:
-        # Try to acquire an exclusive lock on the file
-        lock_handle = os.open(lock_file, os.O_CREAT | os.O_RDWR, mode=0o644)
-        fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        return lock_handle
-    except IOError:
-        logger.warning("Another instance of the script is already running.")
-        sys.exit(1)
-
-# def file_older_than(file_path: str | os.PathLike, num_day: int=1):
-#     """Return true if file is older than number of days"""
-#     time_difference = time.time() - os.path.getmtime(file_path)
-#     seconds_in_a_day = 86400  # 24 * 60 * 60
-#
-#     if time_difference > (seconds_in_a_day * num_day):
-#         return True
-#     else:
-#         return False
 
 
 def increase_disk_size(disk_name: str, adding_size: int) -> bool:
@@ -267,11 +236,6 @@ def disk_space_info(disks:list[str], size_threshold: int)-> Tuple[Tuple[str], Tu
     return tuple(all_disks), tuple(low_space_disks)
 
 
-def site_code():
-    """Returns this site code"""
-    return socket.getfqdn().split('.')[1]
-
-
 def read_env_file(file_path)-> Dict[str, str]:
     """Load environment variables from JSON file"""
     try:
@@ -281,12 +245,14 @@ def read_env_file(file_path)-> Dict[str, str]:
         logger.error("Failed to read environment data file: %s", file_error)
         raise
 
+
 def get_server_config_path(site)-> str:
     """Determine the appropriate server configuration path."""
-    real_path = os.path.realpath(SERVER_CONFIG_LINK)
-    if re.search(r'(replica)', real_path) or site != 'sc':
-        return real_path
+    path = os.path.realpath(SERVER_CONFIG_LINK)
+    if re.search(r'(replica)', path) or site.lower() != 'sc':
+        return path
     return SERVER_CONFIG_PATH
+
 
 def get_sitename_and_url()-> tuple[str, str]:
     """Retrieve site name and URL using sosmgr command."""
@@ -431,10 +397,10 @@ def process_command_line()-> argparse.Namespace:
     logger.debug('Command line arguments: %s', parser.parse_args())
     return parser.parse_args()
 
-__all__ = [ 'lock_script', 'increase_disk_size', 'has_disk_size_been_increased',
+__all__ = [ 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
             'read_log_for_errors', 'rotate_log_file', 'write_to_csv_file', 'disk_space_info',
-            'site_code', 'get_pg_data_parent', 'read_env_file', 'get_server_config_path',
-            'get_sitename_and_url', 'get_sos_services', 'get_sos_disks', 'run_shell_cmd',
+            'get_pg_data_parent', 'read_env_file', 'get_server_config_path', 'run_shell_cmd',
+            'get_sitename_and_url', 'get_sos_services', 'get_sos_disks',
             'process_command_line'
             ]

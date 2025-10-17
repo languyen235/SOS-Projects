@@ -2,6 +2,7 @@
 venv/
 env/
 .venv/
+rsync_ignores.txt
 
 # Python
 __pycache__/

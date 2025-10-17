@@ -31,14 +31,13 @@ SENDER = "linh.a.nguyen@intel.com"
 MONITORING_BASE_DIR = Path('/opt/cliosoft/monitoring')
 DATA_DIR = MONITORING_BASE_DIR / 'data'
 LOG_DIR = MONITORING_BASE_DIR / 'logs'
-LOG_FILE = LOG_DIR / 'sos_service_monitoring.log'
+LOG_FILE = LOG_DIR / 'sos_check_disk_usage.log'
 EXCLUDED_SERVICES_FILE = DATA_DIR / 'excluded_services.txt'
 
 # Site Configuration
 SITES = ['sc', 'sc1', 'sc4', 'sc8', 'pdx', 'iil', 'png', 'iind', 'altera_sc', 'altera_png', 'vr']
 
 # Logging Configuration
-# LOG_FORMAT = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 LOG_FORMAT = '[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s'
 LOG_LEVEL = 'INFO'  # Can be overridden by environment variable
 

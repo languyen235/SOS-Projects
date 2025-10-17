@@ -1,12 +1,11 @@
 import logging
 import subprocess
-import shlex
 import os
 import time
 import sys
 from functools import wraps
 from pathlib import Path
-from typing import List, Callable, TextIO
+from typing import Callable, TextIO
 
 # Add the parent directory to modules
 sys.path.append('/opt/cliosoft/monitoring')
@@ -16,6 +15,27 @@ from src.modules.utils import *
 logger = logging.getLogger(__name__)
 
 #-------------
+def lock_script(lock_file: str):
+    """
+    Locks a file pertaining to this script so that it cannot be run simultaneously.
+
+    Since the lock is automatically released when this script ends, there is no
+    need for an unlock function for this use case.
+
+    Returns:
+        lockfile if lock was acquired. Otherwise, print error and exists.
+    """
+    import fcntl
+    try:
+        # Try to acquire an exclusive lock on the file
+        lock_handle = os.open(lock_file, os.O_CREAT | os.O_RDWR, mode=0o644)
+        fcntl.lockf(lock_handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return lock_handle
+    except IOError:
+        logger.warning("Another instance of the script is already running.")
+        sys.exit(1)
+
+
 def site_code():
     """Returns this site code"""
     import socket
@@ -41,43 +61,44 @@ def setup_logging(log_file: Path) -> logging.Logger:
     )
     return logging.getLogger(__name__)
 
-def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
-    """
-    Run a shell command and return its output as a list of strings.
-    Args:
-        cmd: The command to run
-        timeout: Command timeout in seconds
-        is_shell: Whether to run the command through the shell
 
-    Returns:
-        List of output lines or None if command failed
-    """
-    try:
-        result = subprocess.run(
-            cmd if is_shell else shlex.split(cmd),
-            shell=is_shell,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=timeout,
-            check=True
-        )
-
-        if result.stderr:
-            # logger.error(f"Command [{cmd}] failed: {result.stderr}")
-            logger.error("Command [%s] failed: %s", cmd, result.stderr)
-            return None
-
-        delimiter = ',' if result.stdout.count(',') == 1 else '\n'
-        return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
-
-    except subprocess.TimeoutExpired:
-        logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
-    except subprocess.CalledProcessError as proc_error:
-        logger.critical("Command [%s] failed with status %d: %s",
-                       cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
-
-    return None
+# def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
+#     """
+#     Run a shell command and return its output as a list of strings.
+#     Args:
+#         cmd: The command to run
+#         timeout: Command timeout in seconds
+#         is_shell: Whether to run the command through the shell
+#
+#     Returns:
+#         List of output lines or None if command failed
+#     """
+#     try:
+#         result = subprocess.run(
+#             cmd if is_shell else shlex.split(cmd),
+#             shell=is_shell,
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             text=True,
+#             timeout=timeout,
+#             check=True
+#         )
+#
+#         if result.stderr:
+#             # logger.error(f"Command [{cmd}] failed: {result.stderr}")
+#             logger.error("Command [%s] failed: %s", cmd, result.stderr)
+#             return None
+#
+#         delimiter = ',' if result.stdout.count(',') == 1 else '\n'
+#         return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
+#
+#     except subprocess.TimeoutExpired:
+#         logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
+#     except subprocess.CalledProcessError as proc_error:
+#         logger.critical("Command [%s] failed with status %d: %s",
+#                        cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
+#
+#     return None
 
 
 def file_older_than(file_path: str | os.PathLike, num_day: int=1):
@@ -183,6 +204,6 @@ def send_email_alert(subject: str, message: list[str]) -> bool:
 
 
 #-----
-__all__ = [ 'site_code', 'setup_logging', 'run_shell_cmd', 'file_older_than', 'create_file_decorator',
+__all__ = [ 'lock_script', 'site_code', 'setup_logging', 'file_older_than', 'create_file_decorator',
             'create_disks_file', 'send_email_alert'
         ]
