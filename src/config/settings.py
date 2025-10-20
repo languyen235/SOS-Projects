@@ -5,13 +5,13 @@ from pathlib import Path
 # Cliosoft Paths
 SOS_ADMIN_CMD = "/opt/cliosoft/latest/bin/sosadmin"
 SOS_MGR_CMD = "/opt/cliosoft/latest/bin/sosmgr"
-SERVER_CONFIG_LINK = '/opt/cliosoft/latest/SERVERS'
-SERVER_CONFIG_PATH = '/nfs/site/disks/sos_adm/share/SERVERS7'
+SERVICE_DIR_LINK = '/opt/cliosoft/latest/SERVERS'
+DEFAULT_SERVICE_DIR = '/nfs/site/disks/sos_adm/share/SERVERS7'
 
 # Cliosoft env variables
 CLIOSOFT_DIR = '/opt/cliosoft/latest'
-REAL_SERVERS_PATH = os.path.realpath(SERVER_CONFIG_LINK)  # real path of the sos_servers_dir
-IS_REPLICA = re.search(r'(replica)', REAL_SERVERS_PATH)  # replica keyword found in the path name
+REAL_SERVICE_DIR = os.path.realpath(SERVICE_DIR_LINK)  # real path of the sos_servers_dir
+IS_REPLICA = re.search(r'(replica)', REAL_SERVICE_DIR)  # replica keyword found in the path name
 SOS_SERVER_ROLE = 'replica' if IS_REPLICA else 'repo'
 
 # Thresholds

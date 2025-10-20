@@ -11,7 +11,7 @@ from typing import Callable, TextIO
 sys.path.append('/opt/cliosoft/monitoring')
 
 from src.config.settings import LOG_FORMAT, DDM_CONTACTS, SENDER
-from src.modules.utils import *
+from src.modules.sos_module_1 import *
 logger = logging.getLogger(__name__)
 
 #-------------
@@ -60,45 +60,6 @@ def setup_logging(log_file: Path) -> logging.Logger:
         ]
     )
     return logging.getLogger(__name__)
-
-
-# def run_shell_cmd(cmd: str, timeout: int, is_shell: bool = False)-> List[str] | None:
-#     """
-#     Run a shell command and return its output as a list of strings.
-#     Args:
-#         cmd: The command to run
-#         timeout: Command timeout in seconds
-#         is_shell: Whether to run the command through the shell
-#
-#     Returns:
-#         List of output lines or None if command failed
-#     """
-#     try:
-#         result = subprocess.run(
-#             cmd if is_shell else shlex.split(cmd),
-#             shell=is_shell,
-#             stdout=subprocess.PIPE,
-#             stderr=subprocess.PIPE,
-#             text=True,
-#             timeout=timeout,
-#             check=True
-#         )
-#
-#         if result.stderr:
-#             # logger.error(f"Command [{cmd}] failed: {result.stderr}")
-#             logger.error("Command [%s] failed: %s", cmd, result.stderr)
-#             return None
-#
-#         delimiter = ',' if result.stdout.count(',') == 1 else '\n'
-#         return [line.strip() for line in result.stdout.rstrip('\n').split(delimiter) if line.strip()]
-#
-#     except subprocess.TimeoutExpired:
-#         logger.critical("%s timed out after %s seconds", cmd, timeout, exc_info=True)
-#     except subprocess.CalledProcessError as proc_error:
-#         logger.critical("Command [%s] failed with status %d: %s",
-#                        cmd, proc_error.returncode, proc_error.stderr, exc_info=True)
-#
-#     return None
 
 
 def file_older_than(file_path: str | os.PathLike, num_day: int=1):
@@ -203,7 +164,7 @@ def send_email_alert(subject: str, message: list[str]) -> bool:
         return False
 
 
-#-----
+
 __all__ = [ 'lock_script', 'site_code', 'setup_logging', 'file_older_than', 'create_file_decorator',
             'create_disks_file', 'send_email_alert'
         ]

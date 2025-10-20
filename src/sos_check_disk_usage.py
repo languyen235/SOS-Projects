@@ -3,13 +3,11 @@
 import sys
 import json
 import logging
-from typing import Tuple
-
 
 # Add the parent directory to modules
 sys.path.append('/opt/cliosoft/monitoring')
 
-from modules.utils import *
+from modules.sos_module_1 import *
 from config.settings import *
 from utils.helpers import *
 
@@ -28,14 +26,14 @@ class SosDiskMonitor:
     def load_env_data(self):
         """Load environment data from file or initialize new configuration."""
         if self.env_json_file.exists():
-            self.load_env_vars_from_file()
+            self.load_sos_env_vars_from_file()
         else:
-            self.initialize_env_variables()
+            self.set_sos_env_variables()
             self.save_env_data()
 
 
-    def load_env_vars_from_file(self):
-        """Load environment variables from JSON file and update both instance and OS environment."""
+    def load_sos_env_vars_from_file(self):
+        """Load environment variables from JSON file and update SOS environment variables."""
         data = read_env_file(self.env_json_file)
 
         # Update instance variables
@@ -51,11 +49,11 @@ class SosDiskMonitor:
             'PATH': f"{os.environ['CLIOSOFT_DIR']}/bin:{os.environ['PATH']}"
         })
 
-    def initialize_env_variables(self):
+    def set_sos_env_variables(self):
         """Initialize SOS environment variables with default values."""
         os.environ.update({
             'CLIOSOFT_DIR': '/opt/cliosoft/latest',
-            'SOS_SERVERS_DIR': get_server_config_path(self.site),
+            'SOS_SERVERS_DIR': get_service_dir(self.site),
             'EC_ZONE': self.site,
             'SOS_SERVER_ROLE': SOS_SERVER_ROLE,
             'PATH': f"{os.environ['CLIOSOFT_DIR']}/bin:{os.environ['PATH']}"
@@ -63,7 +61,7 @@ class SosDiskMonitor:
         self.site_name, self.web_url = get_sitename_and_url()
 
     def save_env_data(self):
-        """Save environment variables to JSON file"""
+        """Save SOS environment variables to JSON file"""
         data = {
             'site_name': self.site_name,
             'site_url': self.web_url,
@@ -79,63 +77,28 @@ class SosDiskMonitor:
             logger.error("Failed to write environment data file: %s", error)
             raise
 
-# ----- functions -----
 
-def handle_low_disk_space(disks: Tuple, adding_size: int) -> None:
+def initialize_service(cli_args, class_name):
     """
-    Handle disks with low space by logging warnings and optionally increasing disk size.
+    This function initializes the class service based on the test mode with site code ('ddm')
+    or in production mode using the current site code.
     Args:
-        disks: List of tuples containing disk info (path, size, used, available)
-        adding_size: Size in GB to add to the disk (0 to disable auto-increase)
-    """
-    for disk_info in disks:
-        disk_path, size, used, avail = disk_info
-        logger.warning("%s Size: %sGB; Avail: %sGB *** Low disk space",
-                      disk_path, size, avail)
-
-        if has_disk_size_been_increased(disk_path, days=DISK_SIZE_INCREASE_DAYS):
-            disk_name = disk_path.split('/')[-1]
-            logger.warning("Disk %s size has been recently increased. Investigation needed.", disk_name)
-        elif adding_size > 0:
-            logger.info("Attempting to add %sGB to %s", adding_size, disk_path.split('/')[-1])
-            increase_disk_size(disk_path, adding_size)
-
-
-def check_web_status(web_url: str) -> bool:
-    """
-    Check if the SOS web service is accessible.
-    Args:
-        web_url: Base URL of the web service
+        cli_args: Command line arguments
+        class_name: Class to initialize (e.g. SosDiskMonitor)
     Returns:
-        bool: True if web service is accessible, False otherwise
+        An instance of the class
     """
-    web_status, _ = sosmgr_web_status(web_url)
-    if web_status == 'Failure':
-        logger.critical("%s is inaccessible", web_url)
-        return False
-
-    logger.info("SOS web service status: %s", web_status)
-    return True
-
-
-def initialize_service(cli_args)-> SosDiskMonitor:
-    """Initialize service based on site code or test flag"""
     if cli_args.test_mode:
         logger.debug('Running script on DDM test server')
-        return SosDiskMonitor('ddm')
+        return class_name('ddm')
     else:
-        return SosDiskMonitor(site_code())
+        return class_name(site_code())
 
-def prepare_disks_file(file: Path)-> None:
-    """Refresh data file"""
-    file.unlink(missing_ok=True)
-    create_disks_file(file)
 
 
 def main() -> int:
     """
     Main function to monitor and manage SOS disk usage.
-
     This function:
     1. Processes command line arguments
     2. Initializes the monitoring service
@@ -156,7 +119,7 @@ def main() -> int:
 
         # Initialize service
         try:
-            sos_monitor = initialize_service(cli_args)
+            sos_monitor = initialize_service(cli_args, SosDiskMonitor)
             logger.info("Service initialized for site: %s", sos_monitor.site.upper())
         except Exception as error:
             logger.critical("Failed to initialize service: %s", str(error), exc_info=True)

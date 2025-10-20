@@ -246,12 +246,12 @@ def read_env_file(file_path)-> Dict[str, str]:
         raise
 
 
-def get_server_config_path(site)-> str:
-    """Determine the appropriate server configuration path."""
-    path = os.path.realpath(SERVER_CONFIG_LINK)
-    if re.search(r'(replica)', path) or site.lower() != 'sc':
-        return path
-    return SERVER_CONFIG_PATH
+def get_service_dir(site)-> str:
+    """Determine the appropriate SOS service configuration path."""
+    if IS_REPLICA or site.lower() != 'sc':
+        return REAL_SERVICE_DIR
+
+    return DEFAULT_SERVICE_DIR
 
 
 def get_sitename_and_url()-> tuple[str, str]:
@@ -397,10 +397,54 @@ def process_command_line()-> argparse.Namespace:
     logger.debug('Command line arguments: %s', parser.parse_args())
     return parser.parse_args()
 
+
+def check_web_status(web_url: str) -> bool:
+    """
+    Check if the SOS web service is accessible.
+    Args:
+        web_url: Base URL of the web service
+    Returns:
+        bool: True if web service is accessible, False otherwise
+    """
+    web_status, _ = sosmgr_web_status(web_url)
+    if web_status == 'Failure':
+        logger.critical("%s is inaccessible", web_url)
+        return False
+
+    logger.info("SOS web service status: %s", web_status)
+    return True
+
+
+def handle_low_disk_space(disks: Tuple, adding_size: int) -> None:
+    """
+    Handle disks with low space by logging warnings and optionally increasing disk size.
+    Args:
+        disks: List of tuples containing disk info (path, size, used, available)
+        adding_size: Size in GB to add to the disk (0 to disable auto-increase)
+    """
+    for disk_info in disks:
+        disk_path, size, used, avail = disk_info
+        logger.warning("%s Size: %sGB; Avail: %sGB *** Low disk space",
+                      disk_path, size, avail)
+
+        if has_disk_size_been_increased(disk_path, days=DISK_SIZE_INCREASE_DAYS):
+            disk_name = disk_path.split('/')[-1]
+            logger.warning("Disk %s size has been recently increased. Investigation needed.", disk_name)
+        elif adding_size > 0:
+            logger.info("Attempting to add %sGB to %s", adding_size, disk_path.split('/')[-1])
+            increase_disk_size(disk_path, adding_size)
+
+
+def prepare_disks_file(file: Path)-> None:
+    """Refresh data file"""
+    file.unlink(missing_ok=True)
+    create_disks_file(file)
+
+
 __all__ = [ 'increase_disk_size', 'has_disk_size_been_increased',
             'report_disk_size', 'get_excluded_services', 'send_email', 'sosmgr_web_status',
             'read_log_for_errors', 'rotate_log_file', 'write_to_csv_file', 'disk_space_info',
-            'get_pg_data_parent', 'read_env_file', 'get_server_config_path', 'run_shell_cmd',
-            'get_sitename_and_url', 'get_sos_services', 'get_sos_disks',
-            'process_command_line'
+            'get_pg_data_parent', 'read_env_file', 'get_service_dir', 'run_shell_cmd',
+            'get_sitename_and_url', 'get_sos_services', 'get_sos_disks', 'process_command_line',
+            'check_web_status', 'handle_low_disk_space', 'prepare_disks_file',
             ]
