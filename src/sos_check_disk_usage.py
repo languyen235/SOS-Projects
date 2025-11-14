@@ -1,4 +1,4 @@
-#!/opt/cliosoft/monitoring/venv/bin/python3.12
+#!/opt/cliosoft/monitoring/venv/bin/python3.13
 
 import sys
 import json
@@ -25,42 +25,54 @@ class SosDiskMonitor:
 
     def load_env_data(self):
         """Load environment data from file or initialize new configuration."""
-        if self.env_json_file.exists():
-            self.load_sos_env_vars_from_file()
-        else:
-            self.set_sos_env_variables()
-            self.save_env_data()
+        from_file: bool = self.env_json_file.exists()
+        self.set_environment_variables(from_file=from_file)
+        if not from_file:
+            self.save_env_data_to_file()
 
 
-    def load_sos_env_vars_from_file(self):
-        """Load environment variables from JSON file and update SOS environment variables."""
-        data = read_env_file(self.env_json_file)
+    def set_environment_variables(self, from_file=False) -> None:
+        """Set up SOS environment variables.
+        Args:
+            from_file (bool): If True, load from environment file. Otherwise use defaults
+        """
+        try:
+            if from_file and self.env_json_file.exists():
+                data = read_env_file(self.env_json_file)
+                required_keys = [
+                    'site_name', 'site_url', 'server_role', 'sos_servers_dir', 'sos_cliosoft_dir', 'ec_zone'
+                ]
+                missing_keys = [key for key in required_keys if key not in data]
+                if missing_keys:
+                    raise KeyError(f"Missing required keys in environment file: {', '.join(missing_keys)}")
 
-        # Update instance variables
-        self.site_name = data['site_name']
-        self.web_url = data['site_url']
+                env_vars = {
+                    'CLIOSOFT_DIR': data['sos_cliosoft_dir'],
+                    'SOS_SERVERS_DIR': data['sos_servers_dir'],
+                    'SOS_SERVER_ROLE': data['server_role'],
+                    'EC_ZONE': data['ec_zone']
+                }
+                self.site_name = data['site_name']
+                self.web_url = data['site_url']
+            else:
+                env_vars = {
+                    'CLIOSOFT_DIR': CLIOSOFT_DIR,
+                    'SOS_SERVERS_DIR': get_service_dir(self.site),
+                    'SOS_SERVER_ROLE': SOS_SERVER_ROLE,
+                    'EC_ZONE': self.site,
+                }
+                self.site_name, self.web_url = get_sitename_and_url()
 
-        # Update OS environment
-        os.environ.update({
-            'SOS_SERVERS_DIR': data['sos_servers_dir'],
-            'CLIOSOFT_DIR': data['sos_cliosoft_dir'],
-            'SOS_SERVER_ROLE': data['server_role'],
-            'EC_ZONE': data['ec_zone'],
-            'PATH': f"{os.environ['CLIOSOFT_DIR']}/bin:{os.environ['PATH']}"
-        })
+            # Update PATH and set environment variables
+            env_vars['PATH'] = f"{env_vars['CLIOSOFT_DIR']}/bin:{os.environ.get('PATH', '')}"
+            os.environ.update(env_vars)
 
-    def set_sos_env_variables(self):
-        """Initialize SOS environment variables with default values."""
-        os.environ.update({
-            'CLIOSOFT_DIR': '/opt/cliosoft/latest',
-            'SOS_SERVERS_DIR': get_service_dir(self.site),
-            'EC_ZONE': self.site,
-            'SOS_SERVER_ROLE': SOS_SERVER_ROLE,
-            'PATH': f"{os.environ['CLIOSOFT_DIR']}/bin:{os.environ['PATH']}"
-        })
-        self.site_name, self.web_url = get_sitename_and_url()
+        except Exception as error:
+            logger.error("Unexpected error in set_environment_variables: %s", str(error))
+            raise
 
-    def save_env_data(self):
+
+    def save_env_data_to_file(self):
         """Save SOS environment variables to JSON file"""
         data = {
             'site_name': self.site_name,
@@ -70,6 +82,7 @@ class SosDiskMonitor:
             'sos_cliosoft_dir': os.environ['CLIOSOFT_DIR'],
             'ec_zone': os.environ['EC_ZONE']
         }
+
         try:
             with open(self.env_json_file, 'w', encoding='utf-8') as f:
                 json.dump(data, f, indent=4)
