@@ -1,21 +1,11 @@
-import sys
-import subprocess
-import shutil
-import shlex
-import logging
-import json
-import argparse
-from pathlib import Path
-from typing import List, Tuple, Dict, Iterator
-
 # Add the parent directory to modules
+import sys
 sys.path.append('/opt/cliosoft/monitoring')
 
 from src.config.settings import *
-from src.utils.helpers import *
+from src.modules.sos_module_2 import *
 
 logger = logging.getLogger(__name__)
-
 
 def increase_disk_size(disk_name: str, adding_size: int) -> bool:
     """Increase disk size using START command

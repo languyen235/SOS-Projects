@@ -1,17 +1,10 @@
-import logging
-import subprocess
-import os
-import time
-import sys
-from functools import wraps
-from pathlib import Path
-from typing import Callable, TextIO
-
 # Add the parent directory to modules
+import sys
 sys.path.append('/opt/cliosoft/monitoring')
 
-from src.config.settings import LOG_FORMAT, DDM_CONTACTS, SENDER
+from src.config.settings import *
 from src.modules.sos_module_1 import *
+
 logger = logging.getLogger(__name__)
 
 #-------------
@@ -40,26 +33,6 @@ def site_code():
     """Returns this site code"""
     import socket
     return socket.getfqdn().split('.')[1]
-
-
-def setup_logging(log_file: Path) -> logging.Logger:
-    """Configure and return a logger instance.
-    Returns:
-        logging.Logger: Configured logger instance
-    """
-    # log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
-    # log_format = '[%(asctime)s] [%(name)s] [%(funcName)s] [%(levelname)s] %(message)s'
-    logging.basicConfig(
-        # level=log_level,
-        level = os.environ.get('LOG_LEVEL', 'INFO').upper(),
-        format=LOG_FORMAT,
-        datefmt='%Y-%m-%d %H:%M:%S',
-        handlers=[
-            logging.FileHandler(log_file, mode='w'),
-            logging.StreamHandler()
-        ]
-    )
-    return logging.getLogger(__name__)
 
 
 def file_older_than(file_path: str | os.PathLike, num_day: int=1):
@@ -164,7 +137,6 @@ def send_email_alert(subject: str, message: list[str]) -> bool:
         return False
 
 
-
-__all__ = [ 'lock_script', 'site_code', 'setup_logging', 'file_older_than', 'create_file_decorator',
+__all__ = [ 'lock_script', 'site_code', 'file_older_than', 'create_file_decorator',
             'create_disks_file', 'send_email_alert'
         ]
