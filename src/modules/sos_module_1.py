@@ -1,5 +1,3 @@
-#!/opt/cliosoft/monitoring/venv/bin/python3.12
-
 import sys
 import subprocess
 import shutil
@@ -248,10 +246,12 @@ def read_env_file(file_path)-> Dict[str, str]:
 
 def get_service_dir(site)-> str:
     """Determine the appropriate SOS service configuration path."""
-    if IS_REPLICA or site.lower() != 'sc':
+    if IS_REPLICA:
         return REAL_SERVICE_DIR
-
-    return DEFAULT_SERVICE_DIR
+    elif site.lower() == 'ddm':
+        return REAL_SERVICE_DIR
+    else:
+        return DEFAULT_SERVICE_DIR
 
 
 def get_sitename_and_url()-> tuple[str, str]:
@@ -380,10 +380,10 @@ def process_command_line()-> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
         Options:
-        -dr | --disk-refresh    Refresh the disk file manually. 
+        -dr | --disk_refresh    Refresh the disk file manually. 
                                 (Default: automatically refreshes every 24 hours)
-        -as | --add-size        Enable automation for adding disk space
-        -tm | --test-mode       Flag that the script is running on a test server.
+        -as | --add_size        Enable automation for adding disk space
+        -ts | --test_server       Flag that the script is running on a test server.
 
         Logging control (set in environment):
         - tcsh: setenv LOG_LEVEL DEBUG
@@ -391,9 +391,9 @@ def process_command_line()-> argparse.Namespace:
         - cron: LOG_LEVEL=DEBUG && python3 sos_check_disk_usage.py [args]
         """
     )
-    parser.add_argument("-dr", "--disk-refresh", action="store_true", help='Refresh data file manually')
-    parser.add_argument("-as", "--add-size", action="store_true", help='Enable increasing disk size')
-    parser.add_argument("-tm", "--test-mode", action="store_true", help='Indicate running on test server')
+    parser.add_argument("-dr", "--disk_refresh", action="store_true", help='Refresh data file manually')
+    parser.add_argument("-as", "--add_size", action="store_true", help='Enable increasing disk size')
+    parser.add_argument("-ts", "--test_server", action="store_true", help='Indicate running on test server')
     logger.debug('Command line arguments: %s', parser.parse_args())
     return parser.parse_args()
 

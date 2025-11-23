@@ -1,5 +1,3 @@
-#!/opt/cliosoft/monitoring/venv/bin/python3.13
-
 import sys
 import json
 import logging
@@ -61,11 +59,17 @@ class SosDiskMonitor:
                     'SOS_SERVER_ROLE': SOS_SERVER_ROLE,
                     'EC_ZONE': self.site,
                 }
-                self.site_name, self.web_url = get_sitename_and_url()
 
             # Update PATH and set environment variables
             env_vars['PATH'] = f"{env_vars['CLIOSOFT_DIR']}/bin:{os.environ.get('PATH', '')}"
             os.environ.update(env_vars)
+
+            if not self.site_name or not self.web_url:
+                try:
+                    self.site_name, self.web_url = get_sitename_and_url()
+                except Exception as error:
+                    logger.error("Failed to get site name and url: %s", error)
+                    raise
 
         except Exception as error:
             logger.error("Unexpected error in set_environment_variables: %s", str(error))
@@ -101,7 +105,7 @@ def initialize_service(cli_args, class_name):
     Returns:
         An instance of the class
     """
-    if cli_args.test_mode:
+    if cli_args.test_server:
         logger.debug('Running script on DDM test server')
         return class_name('ddm')
     else:
