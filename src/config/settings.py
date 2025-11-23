@@ -1,6 +1,17 @@
-import os
+import os, sys
+import argparse
+import json
+import logging
 import re
+import shlex
+import shutil
+import subprocess
+import time
+
+from functools import wraps
 from pathlib import Path
+from typing import List, Tuple, Dict, Iterator, Callable, TextIO
+
 
 # Cliosoft Paths
 SOS_ADMIN_CMD = "/opt/cliosoft/latest/bin/sosadmin"
@@ -44,3 +55,21 @@ LOG_LEVEL = 'INFO'  # Can be overridden by environment variable
 # Ensure required directories exist
 for directory in [DATA_DIR, LOG_DIR]:
     directory.mkdir(parents=True, exist_ok=True, mode=0o775)
+
+
+def setup_logging(log_file: Path) -> logging.Logger:
+    """Configure and return a logger instance.
+    Returns:
+        logging.Logger: Configured logger instance
+    """
+    logging.basicConfig(
+        # level=log_level,
+        level = os.environ.get('LOG_LEVEL', 'INFO').upper(),
+        format=LOG_FORMAT,
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=[
+            logging.FileHandler(log_file, mode='w'),
+            logging.StreamHandler()
+        ]
+    )
+    return logging.getLogger(__name__)

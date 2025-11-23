@@ -1,13 +1,12 @@
 import sys
-import json
-import logging
 
 # Add the parent directory to modules
 sys.path.append('/opt/cliosoft/monitoring')
 
-from modules.sos_module_1 import *
 from config.settings import *
-from utils.helpers import *
+from modules.sos_module_1 import *
+from modules.sos_module_2 import *
+
 
 class SosDiskMonitor:
     """Setup Cliosoft application service"""
@@ -64,6 +63,7 @@ class SosDiskMonitor:
             env_vars['PATH'] = f"{env_vars['CLIOSOFT_DIR']}/bin:{os.environ.get('PATH', '')}"
             os.environ.update(env_vars)
 
+            # Get site name and url
             if not self.site_name or not self.web_url:
                 try:
                     self.site_name, self.web_url = get_sitename_and_url()
